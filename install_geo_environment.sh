@@ -139,7 +139,7 @@ if command -v module &> /dev/null; then
         PYTHON_CMD=python3
     fi
     
-    # Load GDAL module
+    # Load GDAL module (for C libraries, but we'll install Python bindings separately)
     print_info "Looking for GDAL module..."
     GDAL_LOADED=false
     
@@ -153,6 +153,11 @@ if command -v module &> /dev/null; then
             if command -v gdalinfo &> /dev/null; then
                 GDAL_VERSION=$(gdalinfo --version | grep -oP 'GDAL \K[0-9]+\.[0-9]+\.[0-9]+' || echo "")
                 print_info "System GDAL version: $GDAL_VERSION"
+                
+                # Important: Clear PYTHONPATH to avoid conflicts with module's Python bindings
+                print_warning "Note: GDAL module may include Python bindings for a different Python version"
+                print_info "Will install matching GDAL Python bindings for your Python version"
+                unset PYTHONPATH
             fi
             break
         fi
@@ -288,21 +293,42 @@ print_success "Virtual environment created with Python $PYTHON_VERSION"
 
 print_info "Activating virtual environment..."
 
+# Clear PYTHONPATH to avoid conflicts with system packages
 unset PYTHONPATH
+
 source "$INSTALL_BASE/$ENV_NAME/.venv/bin/activate"
 
 print_success "Environment activated: $(which python)"
 print_info "Python version in venv: $(python --version)"
 
 # ============================================
+# UPGRADE PIP AND SETUPTOOLS
+# ============================================
+
+print_info "Upgrading pip and essential tools..."
+
+# Function to install packages
+install_packages() {
+    if [ "$USE_PIP" = false ] && command -v uv &> /dev/null; then
+        # Use UV for fast installation
+        uv pip install "$@"
+    else
+        # Fallback to regular pip
+        pip install "$@"
+    fi
+}
+
+# Upgrade pip first
+pip install --upgrade pip
+
+# Install essential build tools
+install_packages --upgrade setuptools wheel cython
+
+# ============================================
 # CREATE REQUIREMENTS FILE
 # ============================================
 
 print_info "Creating requirements.txt with 200+ packages..."
-
-# Use detected GDAL version or default to 3.11.0
-GDAL_REQUIREMENT="gdal==${GDAL_VERSION:-3.11.0}"
-print_info "Using GDAL requirement: $GDAL_REQUIREMENT"
 
 # Adjust numpy version based on Python version
 if [ "$PYTHON_MAJOR" -eq 3 ] && [ "$PYTHON_MINOR" -lt 11 ]; then
@@ -318,8 +344,10 @@ cython
 setuptools==80.9.0
 wheel
 
-# GDAL and geospatial packages
-$GDAL_REQUIREMENT
+# Note: GDAL will be installed separately to match Python version
+# gdal==$GDAL_VERSION
+
+# Geospatial packages
 fiona==1.10.1
 rasterio==1.4.3
 geopandas==1.1.1
@@ -583,43 +611,38 @@ print_success "Requirements file created"
 print_info "Installing Python packages (10-15 minutes with UV)..."
 echo "Using fast UV installer for speed..."
 
-# Function to install packages
-install_packages() {
-    if [ "$USE_PIP" = false ] && command -v uv &> /dev/null; then
-        # Use UV for fast installation
-        uv pip install "$@"
-    else
-        # Fallback to regular pip
-        pip install "$@"
-    fi
-}
-
 # Install core dependencies first
-print_info "Step 1/4: Installing core dependencies..."
-install_packages --upgrade pip setuptools wheel cython
+print_info "Step 1/5: Installing core dependencies..."
 install_packages $NUMPY_VERSION
 
-# Install GDAL
-print_info "Step 2/4: Installing GDAL Python bindings..."
+# CRITICAL: Install GDAL Python bindings separately
+print_info "Step 2/5: Installing GDAL Python bindings..."
+print_warning "Installing GDAL Python bindings for Python $PYTHON_VERSION"
 
-# If GDAL module is loaded and version detected, use that version
+# Clear any PYTHONPATH that might interfere
+unset PYTHONPATH
+
+# Install GDAL matching the system version if detected
 if [ -n "$GDAL_VERSION" ]; then
-    print_info "Installing GDAL Python bindings to match system GDAL $GDAL_VERSION"
+    print_info "Installing GDAL==$GDAL_VERSION to match system GDAL"
     install_packages gdal==$GDAL_VERSION || {
-        print_warning "Exact version match failed, trying without version pin..."
+        print_warning "Failed to install exact version, trying any compatible version..."
         install_packages gdal
     }
 else
-    # No system GDAL found, try default version
-    print_warning "No system GDAL detected, attempting to install from pip..."
-    install_packages gdal==3.11.0 || {
-        print_warning "GDAL installation failed. You may need to load a GDAL module first."
-        print_info "Try: module load rh9/gdal/3.11.0"
-    }
+    print_warning "No system GDAL version detected, installing default..."
+    install_packages gdal
 fi
 
-# Install all packages
-print_info "Step 3/4: Installing all packages from requirements.txt..."
+# Verify GDAL installation
+python -c "from osgeo import gdal; print(f'✓ GDAL {gdal.__version__} installed successfully')" || {
+    print_error "GDAL installation verification failed"
+    print_info "You may need to install GDAL manually with:"
+    print_info "  pip install gdal==$GDAL_VERSION"
+}
+
+# Install all other packages
+print_info "Step 3/5: Installing all packages from requirements.txt..."
 install_packages -r "$INSTALL_BASE/$ENV_NAME/requirements.txt" || {
     print_warning "Some packages failed. Attempting individual installation..."
     
@@ -635,7 +658,7 @@ install_packages -r "$INSTALL_BASE/$ENV_NAME/requirements.txt" || {
 }
 
 # Install Git packages
-print_info "Step 4/4: Installing custom Git packages..."
+print_info "Step 4/5: Installing custom Git packages..."
 install_packages git+https://github.com/ritviksahajpal/octvi.git@7760ceb5c903f47d847c46240870e65780548e1b || {
     print_warning "octvi installation failed"
 }
@@ -643,7 +666,28 @@ install_packages git+https://github.com/ritviksahajpal/pygeoutil.git@29f1b2e1ba8
     print_warning "pygeoutil installation failed"
 }
 
+# Install geocif if available
+print_info "Step 5/5: Installing geocif..."
+install_packages geocif || {
+    print_info "geocif not found in PyPI, trying from GitHub..."
+    install_packages git+https://github.com/ritviksahajpal/geocif.git || {
+        print_warning "geocif installation failed"
+    }
+}
+
 print_success "Package installation completed!"
+
+# ============================================
+# FIX UV PATH FOR FUTURE USE
+# ============================================
+
+print_info "Setting up UV for future use..."
+
+# Add UV to bashrc if not already there
+if ! grep -q "/.cargo/bin" ~/.bashrc; then
+    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+    print_success "Added UV to ~/.bashrc for future sessions"
+fi
 
 # ============================================
 # VERIFICATION
@@ -671,17 +715,27 @@ failed = []
 
 for pkg in critical:
     try:
-        __import__(pkg)
-        print(f"✓ {pkg} imported successfully")
-    except ImportError:
-        print(f"✗ {pkg} import failed")
+        mod = __import__(pkg)
+        # Get version if available
+        version = getattr(mod, '__version__', 'unknown')
+        print(f"✓ {pkg} imported successfully (version: {version})")
+    except ImportError as e:
+        print(f"✗ {pkg} import failed: {e}")
         failed.append(pkg)
+
+# Test geocif separately
+try:
+    from geocif import geocif_runner
+    print("✓ geocif imported successfully")
+except ImportError:
+    print("✗ geocif import failed (optional package)")
 
 if not failed:
     print("\n✅ All critical packages verified!")
 else:
     print(f"\n⚠ Failed packages: {', '.join(failed)}")
     print("You can try installing them manually with:")
+    print(f"  export PATH=\"$HOME/.cargo/bin:$PATH\"")
     print(f"  uv pip install {' '.join(failed)}")
 VERIFY_EOF
 
@@ -696,15 +750,19 @@ Installation Date: $(date)
 Install Location: $INSTALL_BASE/$ENV_NAME
 Working Directory: $WORK_DIR
 Python Version: $PYTHON_VERSION
-GDAL Version: ${GDAL_VERSION:-Not detected}
+GDAL Version: ${GDAL_VERSION:-Installed via pip}
 Virtual Environment: $INSTALL_BASE/$ENV_NAME/.venv
 Package Count: 200+
 
 To activate this environment:
   module purge
   module load python/3.12.9/anaconda  # Or your Python module
-  module load rh9/gdal/3.11.0         # Or your GDAL module
+  module load rh9/gdal/3.11.0         # Or your GDAL module (for C libraries)
+  export PATH="\$HOME/.cargo/bin:\$PATH"  # For UV
   source $INSTALL_BASE/$ENV_NAME/.venv/bin/activate
+
+To fix GDAL if import fails:
+  uv pip install gdal==$GDAL_VERSION
 
 To update packages:
   Activate environment first, then:
@@ -713,6 +771,9 @@ To update packages:
 To add new packages:
   Activate environment first, then:
   uv pip install new_package_name
+
+Note: GDAL Python bindings are installed for Python $PYTHON_VERSION
+      If you switch Python versions, reinstall GDAL: pip install gdal
 INFO_EOF
 
 print_success "Installation info saved to $INSTALL_BASE/$ENV_NAME/installation_info.txt"
@@ -735,8 +796,9 @@ if [ "$PYTHON_LOADED" = true ]; then
     echo "  module load python/3.12.9/anaconda  # (or python/3.11.7/anaconda)"
 fi
 if [ "$GDAL_LOADED" = true ]; then
-    echo "  module load rh9/gdal/3.11.0"
+    echo "  module load rh9/gdal/3.11.0  # For GDAL C libraries"
 fi
+echo "  export PATH=\"\$HOME/.cargo/bin:\$PATH\"  # For UV"
 echo "  source $INSTALL_BASE/$ENV_NAME/.venv/bin/activate"
 echo ""
 echo "Then navigate to your working directory:"
@@ -746,9 +808,12 @@ echo "Installation Details:"
 echo "  Location: $INSTALL_BASE/$ENV_NAME"
 echo "  Python Version: $PYTHON_VERSION"
 if [ -n "$GDAL_VERSION" ]; then
-    echo "  GDAL Version: $GDAL_VERSION"
+    echo "  GDAL Version: $GDAL_VERSION (Python bindings installed via pip)"
 fi
 echo "  Packages: 200+ scientific packages"
+echo ""
+echo "Note: If GDAL import fails, reinstall with:"
+echo "  uv pip install gdal==$GDAL_VERSION"
 echo ""
 echo "============================================"
 echo ""
