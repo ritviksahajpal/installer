@@ -217,7 +217,8 @@ export PYTHONNOUSERSITE=1
 export PIP_USER=0
 export UV_CACHE_DIR="$INSTALL_BASE/.uv-cache"
 export PIP_CACHE_DIR="$INSTALL_BASE/.pip-cache"
-export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+# Add both possible UV locations to PATH
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 
 # ============================================
 # CREATE DIRECTORIES
@@ -242,34 +243,61 @@ print_success "Directories created"
 # INSTALL UV IF NOT PRESENT
 # ============================================
 
-if ! command -v uv &> /dev/null; then
+# First check if UV already exists
+UV_FOUND=false
+UV_PATH=""
+
+# Check common UV installation locations
+for uv_path in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+    if [ -f "$uv_path" ]; then
+        UV_FOUND=true
+        UV_PATH=$(dirname "$uv_path")
+        print_success "UV already installed at: $uv_path"
+        break
+    fi
+done
+
+if [ "$UV_FOUND" = false ]; then
     print_info "Installing UV package manager (fast Python installer)..."
     
     # Try curl first
     if command -v curl &> /dev/null; then
         curl -LsSf https://astral.sh/uv/install.sh | sh
+        # UV installer typically installs to ~/.cargo/bin or ~/.local/bin
+        # Check both locations after installation
+        if [ -f "$HOME/.cargo/bin/uv" ]; then
+            UV_PATH="$HOME/.cargo/bin"
+        elif [ -f "$HOME/.local/bin/uv" ]; then
+            UV_PATH="$HOME/.local/bin"
+        fi
     # Try wget if curl fails
     elif command -v wget &> /dev/null; then
         wget -qO- https://astral.sh/uv/install.sh | sh
+        if [ -f "$HOME/.cargo/bin/uv" ]; then
+            UV_PATH="$HOME/.cargo/bin"
+        elif [ -f "$HOME/.local/bin/uv" ]; then
+            UV_PATH="$HOME/.local/bin"
+        fi
     else
         print_warning "Neither curl nor wget available. Installing via pip..."
         $PYTHON_CMD -m pip install --user uv
+        UV_PATH="$HOME/.local/bin"
     fi
-    
-    # Update PATH for current session
-    export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
-    
-    # Verify UV installation
-    if ! command -v uv &> /dev/null; then
-        print_error "UV installation failed. Falling back to pip."
-        USE_PIP=true
-    else
-        print_success "UV installed successfully"
-        USE_PIP=false
-    fi
-else
-    print_success "UV already installed: $(uv --version)"
+fi
+
+# Update PATH for current session to include UV
+if [ -n "$UV_PATH" ]; then
+    export PATH="$UV_PATH:$PATH"
+    print_info "Added $UV_PATH to PATH"
+fi
+
+# Verify UV installation
+if command -v uv &> /dev/null; then
+    print_success "UV is available: $(uv --version)"
     USE_PIP=false
+else
+    print_error "UV installation failed or not found. Falling back to pip."
+    USE_PIP=true
 fi
 
 # ============================================
@@ -683,10 +711,20 @@ print_success "Package installation completed!"
 
 print_info "Setting up UV for future use..."
 
+# Determine which path UV is in
+UV_INSTALL_PATH=""
+if [ -f "$HOME/.local/bin/uv" ]; then
+    UV_INSTALL_PATH="$HOME/.local/bin"
+elif [ -f "$HOME/.cargo/bin/uv" ]; then
+    UV_INSTALL_PATH="$HOME/.cargo/bin"
+fi
+
 # Add UV to bashrc if not already there
-if ! grep -q "/.cargo/bin" ~/.bashrc; then
-    echo 'export PATH="$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
-    print_success "Added UV to ~/.bashrc for future sessions"
+if [ -n "$UV_INSTALL_PATH" ]; then
+    if ! grep -q "$UV_INSTALL_PATH" ~/.bashrc; then
+        echo "export PATH=\"$UV_INSTALL_PATH:\$PATH\"" >> ~/.bashrc
+        print_success "Added UV path ($UV_INSTALL_PATH) to ~/.bashrc for future sessions"
+    fi
 fi
 
 # ============================================
@@ -758,7 +796,7 @@ To activate this environment:
   module purge
   module load python/3.12.9/anaconda  # Or your Python module
   module load rh9/gdal/3.11.0         # Or your GDAL module (for C libraries)
-  export PATH="\$HOME/.cargo/bin:\$PATH"  # For UV
+  export PATH="\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH"  # For UV
   source $INSTALL_BASE/$ENV_NAME/.venv/bin/activate
 
 To fix GDAL if import fails:
