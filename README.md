@@ -13,7 +13,7 @@ A robust installer script for setting up a comprehensive Python environment with
 
 ## Quick Start
 
-### For HPC Systems
+### For UMD HPC Systems
 
 ```bash
 # Download the installer
@@ -56,6 +56,7 @@ bash install_geo_environment_cloud.sh "$HOME/geo-env" "$HOME/projects"
 - **CatBoost** - Gradient boosting
 - **SHAP** - Model interpretability
 - **Optuna** - Hyperparameter optimization
+- **geocif** - ML Yield model
 
 ### Data Processing
 - **Pandas** - Data analysis
@@ -67,8 +68,6 @@ bash install_geo_environment_cloud.sh "$HOME/geo-env" "$HOME/projects"
 ### Cloud & Remote Sensing
 - **Earth Engine API** - Google Earth Engine
 - **Boto3** - AWS services
-- **Azure Storage** - Azure blob storage
-- **Sentinel/Landsat tools** - Satellite data
 
 ### Custom Packages
 - **octvi** - Vegetation indices
@@ -96,7 +95,7 @@ bash install_geo_environment_cloud.sh "$HOME/geo-env" "$HOME/projects"
 
 ### Step 2: Run the Installer
 
-#### HPC Installation
+#### UMD HPC Installation
 
 ```bash
 # The installer will automatically:
@@ -117,7 +116,7 @@ bash install_geo_environment_cloud.sh "$HOME/geo-env" "$HOME/projects"
 
 ### Step 3: Activate Your Environment
 
-#### HPC Systems
+#### UMD HPC Systems
 ```bash
 module purge
 module load python/3.12.9/anaconda  # Or your Python module
@@ -128,43 +127,6 @@ source /path/to/installation/geo-stack/.venv/bin/activate
 #### Cloud/Local Systems
 ```bash
 source ~/geo-env/geo-stack/.venv/bin/activate
-```
-
-## Usage Examples
-
-### Basic Usage
-```python
-# After activation
-python
->>> import rasterio
->>> import geopandas as gpd
->>> import xarray as xr
->>> from osgeo import gdal
->>> import torch
->>> # All packages ready to use!
-```
-
-### Processing Satellite Data
-```python
-import rasterio
-import numpy as np
-from rasterio.plot import show
-
-# Open a GeoTIFF
-with rasterio.open('satellite_image.tif') as src:
-    data = src.read()
-    metadata = src.meta
-```
-
-### Climate Data Analysis
-```python
-import xarray as xr
-import cartopy.crs as ccrs
-import matplotlib.pyplot as plt
-
-# Load NetCDF data
-ds = xr.open_dataset('climate_data.nc')
-ds.temperature.plot()
 ```
 
 ## Configuration Options
@@ -259,51 +221,7 @@ uv pip install --upgrade package_name
 uv pip install --upgrade -r /path/to/geo-stack/requirements.txt
 ```
 
-## Contributing
-
-Issues and pull requests welcome! Please test any changes on both HPC and cloud environments.
-
-## Version Compatibility
-
-| Component | Version | Notes |
-|-----------|---------|-------|
-| Python | 3.9-3.12 | 3.12 recommended |
-| GDAL | 3.4-3.11 | Must match system |
-| CUDA | 11.8/12.1 | For PyTorch GPU |
-| OS | Linux | RHEL, Ubuntu, Debian |
-
-## Common Use Cases
-
-- **Agricultural Monitoring**: Crop classification, yield prediction
-- **Climate Analysis**: Temperature trends, precipitation patterns
-- **Remote Sensing**: Satellite image processing, change detection
-- **Geospatial ML**: Deep learning on raster data
-- **Environmental Modeling**: Watershed analysis, carbon mapping
-
-## Support
-
-For issues specific to:
-- **Installation script**: Open an issue on this repository
-- **Individual packages**: Consult package documentation
-- **HPC configuration**: Contact your system administrator
-
 ## License
 
 MIT License - See LICENSE file for details
 
-## Acknowledgments
-
-This installer aggregates tools from the open-source geospatial community including:
-- OSGeo Foundation (GDAL, GEOS)
-- NumFOCUS (NumPy, Pandas, XArray)
-- PyTorch Foundation
-- Individual package maintainers
-
----
-
-**Repository**: https://github.com/ritviksahajpal/installer  
-**View Scripts**: 
-- [HPC Version](https://github.com/ritviksahajpal/installer/blob/main/install_geo_environment.sh)
-- [Cloud Version](https://github.com/ritviksahajpal/installer/blob/main/install_geo_environment_cloud.sh)  
-**Author**: Ritvik Sahajpal  
-**Last Updated**: December 2024
