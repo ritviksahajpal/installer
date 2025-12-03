@@ -3,6 +3,7 @@
 # ============================================
 # Python Geospatial Environment Installer
 # HPC/Cluster Version with Module Support
+# FIXED: Proper UV PATH handling
 # ============================================
 
 set -e  # Exit on any error
@@ -18,6 +19,28 @@ print_success() { echo -e "${GREEN}✓ $1${NC}"; }
 print_error() { echo -e "${RED}✗ $1${NC}"; }
 print_warning() { echo -e "${YELLOW}⚠ $1${NC}"; }
 print_info() { echo -e "→ $1"; }
+
+# ============================================
+# CRITICAL: SET UP UV PATH EARLY
+# ============================================
+# This must happen BEFORE anything else to ensure UV is available
+# UV installs to ~/.local/bin or ~/.cargo/bin
+
+setup_uv_path() {
+    # Add both possible UV locations to PATH
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+    
+    # Also add to .bashrc if not already there (for future sessions)
+    if ! grep -q 'export PATH="\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH"' ~/.bashrc 2>/dev/null; then
+        echo '' >> ~/.bashrc
+        echo '# UV package manager PATH (added by geo-stack installer)' >> ~/.bashrc
+        echo 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
+        print_success "Added UV PATH to ~/.bashrc for future sessions"
+    fi
+}
+
+# Call this immediately
+setup_uv_path
 
 # ============================================
 # CONFIGURATION SECTION
@@ -217,8 +240,9 @@ export PYTHONNOUSERSITE=1
 export PIP_USER=0
 export UV_CACHE_DIR="$INSTALL_BASE/.uv-cache"
 export PIP_CACHE_DIR="$INSTALL_BASE/.pip-cache"
-# Add both possible UV locations to PATH
-export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
+# PATH already set by setup_uv_path() at the start
+print_info "UV PATH already configured: $HOME/.local/bin and $HOME/.cargo/bin"
 
 # ============================================
 # CREATE DIRECTORIES
@@ -243,61 +267,37 @@ print_success "Directories created"
 # INSTALL UV IF NOT PRESENT
 # ============================================
 
-# First check if UV already exists
-UV_FOUND=false
-UV_PATH=""
+print_info "Checking for UV package manager..."
 
-# Check common UV installation locations
-for uv_path in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
-    if [ -f "$uv_path" ]; then
-        UV_FOUND=true
-        UV_PATH=$(dirname "$uv_path")
-        print_success "UV already installed at: $uv_path"
-        break
-    fi
-done
-
-if [ "$UV_FOUND" = false ]; then
+# Check if UV already exists in PATH
+if command -v uv &> /dev/null; then
+    print_success "UV already installed: $(uv --version)"
+    USE_PIP=false
+else
     print_info "Installing UV package manager (fast Python installer)..."
     
     # Try curl first
     if command -v curl &> /dev/null; then
         curl -LsSf https://astral.sh/uv/install.sh | sh
-        # UV installer typically installs to ~/.cargo/bin or ~/.local/bin
-        # Check both locations after installation
-        if [ -f "$HOME/.cargo/bin/uv" ]; then
-            UV_PATH="$HOME/.cargo/bin"
-        elif [ -f "$HOME/.local/bin/uv" ]; then
-            UV_PATH="$HOME/.local/bin"
-        fi
     # Try wget if curl fails
     elif command -v wget &> /dev/null; then
         wget -qO- https://astral.sh/uv/install.sh | sh
-        if [ -f "$HOME/.cargo/bin/uv" ]; then
-            UV_PATH="$HOME/.cargo/bin"
-        elif [ -f "$HOME/.local/bin/uv" ]; then
-            UV_PATH="$HOME/.local/bin"
-        fi
     else
         print_warning "Neither curl nor wget available. Installing via pip..."
         $PYTHON_CMD -m pip install --user uv
-        UV_PATH="$HOME/.local/bin"
     fi
-fi
-
-# Update PATH for current session to include UV
-if [ -n "$UV_PATH" ]; then
-    export PATH="$UV_PATH:$PATH"
-    print_info "Added $UV_PATH to PATH"
-fi
-
-# Verify UV installation
-if command -v uv &> /dev/null; then
-    print_success "UV is available: $(uv --version)"
-    USE_PIP=false
-else
-    print_error "UV installation failed or not found. Falling back to pip."
-    USE_PIP=true
+    
+    # Re-source PATH to pick up newly installed UV
+    export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+    
+    # Verify UV installation
+    if command -v uv &> /dev/null; then
+        print_success "UV installed successfully: $(uv --version)"
+        USE_PIP=false
+    else
+        print_error "UV installation failed. Falling back to pip."
+        USE_PIP=true
+    fi
 fi
 
 # ============================================
@@ -706,28 +706,6 @@ install_packages geocif || {
 print_success "Package installation completed!"
 
 # ============================================
-# FIX UV PATH FOR FUTURE USE
-# ============================================
-
-print_info "Setting up UV for future use..."
-
-# Determine which path UV is in
-UV_INSTALL_PATH=""
-if [ -f "$HOME/.local/bin/uv" ]; then
-    UV_INSTALL_PATH="$HOME/.local/bin"
-elif [ -f "$HOME/.cargo/bin/uv" ]; then
-    UV_INSTALL_PATH="$HOME/.cargo/bin"
-fi
-
-# Add UV to bashrc if not already there
-if [ -n "$UV_INSTALL_PATH" ]; then
-    if ! grep -q "$UV_INSTALL_PATH" ~/.bashrc; then
-        echo "export PATH=\"$UV_INSTALL_PATH:\$PATH\"" >> ~/.bashrc
-        print_success "Added UV path ($UV_INSTALL_PATH) to ~/.bashrc for future sessions"
-    fi
-fi
-
-# ============================================
 # VERIFICATION
 # ============================================
 
@@ -773,9 +751,43 @@ if not failed:
 else:
     print(f"\n⚠ Failed packages: {', '.join(failed)}")
     print("You can try installing them manually with:")
-    print(f"  export PATH=\"$HOME/.cargo/bin:$PATH\"")
     print(f"  uv pip install {' '.join(failed)}")
 VERIFY_EOF
+
+# ============================================
+# CREATE ACTIVATION SCRIPT
+# ============================================
+
+print_info "Creating activation helper script..."
+
+cat > "$INSTALL_BASE/$ENV_NAME/activate.sh" << ACTIVATE_EOF
+#!/bin/bash
+# Activation script for geo-stack environment
+# Source this file: source $INSTALL_BASE/$ENV_NAME/activate.sh
+
+# Step 1: Add UV to PATH (required for package management)
+export PATH="\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH"
+
+# Step 2: Load modules (if available)
+if command -v module &> /dev/null; then
+    module purge 2>/dev/null || true
+    module load python/3.12.9/anaconda 2>/dev/null || module load python/3.11.7/anaconda 2>/dev/null || true
+    module load rh9/gdal/3.11.0 2>/dev/null || module load gdal 2>/dev/null || true
+fi
+
+# Step 3: Clear PYTHONPATH to avoid conflicts
+unset PYTHONPATH
+
+# Step 4: Activate virtual environment
+source "$INSTALL_BASE/$ENV_NAME/.venv/bin/activate"
+
+echo "✓ geo-stack environment activated"
+echo "  Python: \$(which python)"
+echo "  UV: \$(which uv 2>/dev/null || echo 'not found')"
+ACTIVATE_EOF
+
+chmod +x "$INSTALL_BASE/$ENV_NAME/activate.sh"
+print_success "Activation script created: $INSTALL_BASE/$ENV_NAME/activate.sh"
 
 # ============================================
 # SAVE INSTALLATION INFO
@@ -792,22 +804,45 @@ GDAL Version: ${GDAL_VERSION:-Installed via pip}
 Virtual Environment: $INSTALL_BASE/$ENV_NAME/.venv
 Package Count: 200+
 
-To activate this environment:
+============================================
+QUICK START (recommended method):
+============================================
+
+  source $INSTALL_BASE/$ENV_NAME/activate.sh
+  cd $WORK_DIR
+
+============================================
+MANUAL ACTIVATION (if needed):
+============================================
+
+  # 1. FIRST: Add UV to PATH
+  export PATH="\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH"
+
+  # 2. Load modules
   module purge
-  module load python/3.12.9/anaconda  # Or your Python module
-  module load rh9/gdal/3.11.0         # Or your GDAL module (for C libraries)
-  export PATH="\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH"  # For UV
+  module load python/3.12.9/anaconda
+  module load rh9/gdal/3.11.0
+
+  # 3. Activate environment
   source $INSTALL_BASE/$ENV_NAME/.venv/bin/activate
 
-To fix GDAL if import fails:
+  # 4. Navigate to working directory
+  cd $WORK_DIR
+
+============================================
+TROUBLESHOOTING:
+============================================
+
+If 'uv: command not found':
+  export PATH="\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH"
+
+If GDAL import fails:
   uv pip install gdal==$GDAL_VERSION
 
 To update packages:
-  Activate environment first, then:
   uv pip install --upgrade package_name
 
 To add new packages:
-  Activate environment first, then:
   uv pip install new_package_name
 
 Note: GDAL Python bindings are installed for Python $PYTHON_VERSION
@@ -827,16 +862,25 @@ echo "============================================"
 echo ""
 echo "✅ Your Python environment is ready!"
 echo ""
-echo "To activate your environment, run these commands:"
+echo -e "${GREEN}RECOMMENDED: Use the activation script:${NC}"
 echo ""
-echo "  module purge"
+echo "  source $INSTALL_BASE/$ENV_NAME/activate.sh"
+echo ""
+echo "Or activate manually with these commands:"
+echo ""
+echo "  # 1. FIRST: Add UV to PATH (REQUIRED)"
+echo "  export PATH=\"\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH\""
+echo ""
+echo "  # 2. Load modules"
 if [ "$PYTHON_LOADED" = true ]; then
-    echo "  module load python/3.12.9/anaconda  # (or python/3.11.7/anaconda)"
+    echo "  module purge"
+    echo "  module load python/3.12.9/anaconda"
 fi
 if [ "$GDAL_LOADED" = true ]; then
-    echo "  module load rh9/gdal/3.11.0  # For GDAL C libraries"
+    echo "  module load rh9/gdal/3.11.0"
 fi
-echo "  export PATH=\"\$HOME/.cargo/bin:\$PATH\"  # For UV"
+echo ""
+echo "  # 3. Activate environment"
 echo "  source $INSTALL_BASE/$ENV_NAME/.venv/bin/activate"
 echo ""
 echo "Then navigate to your working directory:"
@@ -846,12 +890,12 @@ echo "Installation Details:"
 echo "  Location: $INSTALL_BASE/$ENV_NAME"
 echo "  Python Version: $PYTHON_VERSION"
 if [ -n "$GDAL_VERSION" ]; then
-    echo "  GDAL Version: $GDAL_VERSION (Python bindings installed via pip)"
+    echo "  GDAL Version: $GDAL_VERSION"
 fi
 echo "  Packages: 200+ scientific packages"
 echo ""
-echo "Note: If GDAL import fails, reinstall with:"
-echo "  uv pip install gdal==$GDAL_VERSION"
+echo "Note: UV PATH has been added to your ~/.bashrc"
+echo "      New terminal sessions will have UV available automatically."
 echo ""
 echo "============================================"
 echo ""
