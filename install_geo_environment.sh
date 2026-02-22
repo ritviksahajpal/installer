@@ -210,10 +210,14 @@ if command -v module &> /dev/null; then
             if command -v gdalinfo &> /dev/null; then
                 GDAL_VERSION=$(gdalinfo --version | grep -oP 'GDAL \K[0-9]+\.[0-9]+\.[0-9]+' || echo "")
                 print_info "System GDAL version: $GDAL_VERSION"
-                
-                # Important: Clear PYTHONPATH to avoid conflicts with module's Python bindings
-                print_warning "Note: GDAL module may include Python bindings for a different Python version"
-                print_info "Will install matching GDAL Python bindings for your Python version"
+
+                # Save PYTHONPATH set by the GDAL module — it points to pre-built bindings
+                GDAL_MODULE_PYTHONPATH="${PYTHONPATH:-}"
+                if [ -n "$GDAL_MODULE_PYTHONPATH" ]; then
+                    print_info "GDAL module PYTHONPATH: $GDAL_MODULE_PYTHONPATH"
+                fi
+
+                # Clear PYTHONPATH to avoid conflicts during install
                 unset PYTHONPATH
             fi
             break
@@ -687,32 +691,59 @@ print_warning "Installing GDAL Python bindings for Python $PYTHON_VERSION"
 # Clear any PYTHONPATH that might interfere
 unset PYTHONPATH
 
-# Locate gdal-config from the loaded module and export build environment
-if command -v gdal-config &> /dev/null; then
-    export GDAL_CONFIG=$(which gdal-config)
-    GDAL_INCLUDE=$(gdal-config --cflags 2>/dev/null || true)
-    GDAL_LIB_DIR=$(gdal-config --libs 2>/dev/null | grep -oP '(?<=-L)\S+' || true)
-    print_info "Found gdal-config: $GDAL_CONFIG"
-    print_info "GDAL include flags: $GDAL_INCLUDE"
-    if [ -n "$GDAL_LIB_DIR" ]; then
-        export LD_LIBRARY_PATH="$GDAL_LIB_DIR:${LD_LIBRARY_PATH:-}"
-        print_info "Added GDAL lib dir to LD_LIBRARY_PATH: $GDAL_LIB_DIR"
-    fi
-else
-    print_warning "gdal-config not found — GDAL source build may fail"
+GDAL_INSTALLED=false
+
+# Strategy 1: Copy pre-built bindings from the GDAL module (guaranteed compatible)
+if [ -n "$GDAL_MODULE_PYTHONPATH" ]; then
+    print_info "Checking GDAL module for pre-built Python bindings..."
+    VENV_SITE_PACKAGES="$INSTALL_BASE/$ENV_NAME/.venv/lib/python${PYTHON_MAJOR}.${PYTHON_MINOR}/site-packages"
+
+    # Search for osgeo package in the module's PYTHONPATH directories
+    IFS=':' read -ra GDAL_PATHS <<< "$GDAL_MODULE_PYTHONPATH"
+    for gpath in "${GDAL_PATHS[@]}"; do
+        if [ -d "$gpath/osgeo" ]; then
+            # Verify the bindings match our Python version (check for .cpython-3XX .so files)
+            PYVER_TAG="cpython-${PYTHON_MAJOR}${PYTHON_MINOR}"
+            if ls "$gpath/osgeo/"*"$PYVER_TAG"* &>/dev/null 2>&1; then
+                print_success "Found compatible GDAL bindings at: $gpath/osgeo"
+                cp -r "$gpath/osgeo" "$VENV_SITE_PACKAGES/"
+                # Also copy GDAL data/metadata if present
+                for extra in GDAL*.dist-info gdal*.dist-info; do
+                    if [ -d "$gpath/$extra" ]; then
+                        cp -r "$gpath/$extra" "$VENV_SITE_PACKAGES/"
+                    fi
+                done
+                GDAL_INSTALLED=true
+                break
+            else
+                print_warning "GDAL bindings at $gpath are for a different Python version, skipping"
+            fi
+        fi
+    done
 fi
 
-# Install GDAL matching the system version, built from source against system libs
-if [ -n "$GDAL_VERSION" ]; then
-    print_info "Building GDAL==$GDAL_VERSION from source against system GDAL libraries"
-    # Use pip directly (not uv) for source builds — more reliable with build flags
-    pip install --no-cache-dir --no-binary gdal gdal==$GDAL_VERSION || {
-        print_warning "Source build failed, trying pre-built wheel as fallback..."
-        install_packages gdal==$GDAL_VERSION || install_packages gdal
-    }
-else
-    print_warning "No system GDAL version detected, installing default..."
-    pip install --no-cache-dir --no-binary gdal gdal || install_packages gdal
+# Strategy 2: pip source build against system GDAL
+if [ "$GDAL_INSTALLED" = false ]; then
+    print_info "Building GDAL from source as fallback..."
+
+    if command -v gdal-config &> /dev/null; then
+        export GDAL_CONFIG=$(which gdal-config)
+        GDAL_LIB_DIR=$(gdal-config --libs 2>/dev/null | grep -oP '(?<=-L)\S+' || true)
+        print_info "Found gdal-config: $GDAL_CONFIG"
+        if [ -n "$GDAL_LIB_DIR" ]; then
+            export LD_LIBRARY_PATH="$GDAL_LIB_DIR:${LD_LIBRARY_PATH:-}"
+        fi
+    fi
+
+    if [ -n "$GDAL_VERSION" ]; then
+        print_info "Building GDAL==$GDAL_VERSION from source"
+        pip install --no-cache-dir --no-binary gdal gdal==$GDAL_VERSION || {
+            print_warning "Source build failed, trying pre-built wheel..."
+            install_packages gdal==$GDAL_VERSION || install_packages gdal
+        }
+    else
+        pip install --no-cache-dir --no-binary gdal gdal || install_packages gdal
+    fi
 fi
 
 # Verify GDAL installation
