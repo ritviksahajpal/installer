@@ -755,16 +755,31 @@ if [ "$GDAL_INSTALLED" = false ]; then
 
     if [ -n "$GDAL_VERSION" ]; then
         print_info "Building GDAL==$GDAL_VERSION from source (with RPATH for correct lib linking)"
-        pip install --no-cache-dir --no-binary gdal gdal==$GDAL_VERSION || {
+        pip install --no-cache-dir --no-build-isolation --no-binary gdal gdal==$GDAL_VERSION || {
             print_warning "Source build failed, trying pre-built wheel..."
             install_packages gdal==$GDAL_VERSION || install_packages gdal
         }
     else
-        pip install --no-cache-dir --no-binary gdal gdal || install_packages gdal
+        pip install --no-cache-dir --no-build-isolation --no-binary gdal gdal || install_packages gdal
     fi
 
     # Clean up build flags so they don't affect other packages
     unset LDFLAGS CFLAGS
+fi
+
+# Diagnostic: check if RPATH was embedded in the built .so
+GDAL_SO=$(find "$INSTALL_BASE/$ENV_NAME/.venv" -name "_gdal*.so" 2>/dev/null | head -1)
+if [ -n "$GDAL_SO" ]; then
+    print_info "Built GDAL .so: $GDAL_SO"
+    if command -v readelf &>/dev/null; then
+        RPATH_CHECK=$(readelf -d "$GDAL_SO" 2>/dev/null | grep -i -E 'rpath|runpath' || true)
+        if [ -n "$RPATH_CHECK" ]; then
+            print_success "RPATH embedded: $RPATH_CHECK"
+        else
+            print_warning "No RPATH found in .so — checking ldd..."
+            ldd "$GDAL_SO" 2>/dev/null | grep -i gdal || true
+        fi
+    fi
 fi
 
 # Verify GDAL installation
@@ -772,6 +787,12 @@ python -c "from osgeo import gdal; print(f'✓ GDAL {gdal.__version__} installed
     print_error "GDAL installation verification failed"
     print_info "You may need to install GDAL manually with:"
     print_info "  pip install --no-cache-dir --no-binary gdal gdal==$GDAL_VERSION"
+    # Show which libgdal is being found
+    if [ -n "$GDAL_SO" ]; then
+        print_info "Diagnostic — ldd output for _gdal.so:"
+        ldd "$GDAL_SO" 2>/dev/null | grep -i gdal || true
+        print_info "Current LD_LIBRARY_PATH: ${LD_LIBRARY_PATH:-<empty>}"
+    fi
 }
 
 # Install all other packages
