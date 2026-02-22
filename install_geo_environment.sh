@@ -687,23 +687,39 @@ print_warning "Installing GDAL Python bindings for Python $PYTHON_VERSION"
 # Clear any PYTHONPATH that might interfere
 unset PYTHONPATH
 
+# Locate gdal-config from the loaded module and export build environment
+if command -v gdal-config &> /dev/null; then
+    export GDAL_CONFIG=$(which gdal-config)
+    GDAL_INCLUDE=$(gdal-config --cflags 2>/dev/null || true)
+    GDAL_LIB_DIR=$(gdal-config --libs 2>/dev/null | grep -oP '(?<=-L)\S+' || true)
+    print_info "Found gdal-config: $GDAL_CONFIG"
+    print_info "GDAL include flags: $GDAL_INCLUDE"
+    if [ -n "$GDAL_LIB_DIR" ]; then
+        export LD_LIBRARY_PATH="$GDAL_LIB_DIR:${LD_LIBRARY_PATH:-}"
+        print_info "Added GDAL lib dir to LD_LIBRARY_PATH: $GDAL_LIB_DIR"
+    fi
+else
+    print_warning "gdal-config not found — GDAL source build may fail"
+fi
+
 # Install GDAL matching the system version, built from source against system libs
 if [ -n "$GDAL_VERSION" ]; then
     print_info "Building GDAL==$GDAL_VERSION from source against system GDAL libraries"
-    install_packages --no-binary gdal gdal==$GDAL_VERSION || {
+    # Use pip directly (not uv) for source builds — more reliable with build flags
+    pip install --no-cache-dir --no-binary gdal gdal==$GDAL_VERSION || {
         print_warning "Source build failed, trying pre-built wheel as fallback..."
         install_packages gdal==$GDAL_VERSION || install_packages gdal
     }
 else
     print_warning "No system GDAL version detected, installing default..."
-    install_packages --no-binary gdal gdal || install_packages gdal
+    pip install --no-cache-dir --no-binary gdal gdal || install_packages gdal
 fi
 
 # Verify GDAL installation
 python -c "from osgeo import gdal; print(f'✓ GDAL {gdal.__version__} installed successfully')" || {
     print_error "GDAL installation verification failed"
     print_info "You may need to install GDAL manually with:"
-    print_info "  pip install --no-binary gdal gdal==$GDAL_VERSION"
+    print_info "  pip install --no-cache-dir --no-binary gdal gdal==$GDAL_VERSION"
 }
 
 # Install all other packages
