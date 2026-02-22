@@ -285,14 +285,22 @@ print_info "UV PATH already configured: $HOME/.local/bin and $HOME/.cargo/bin"
 print_info "Creating installation directories..."
 
 mkdir -p "$INSTALL_BASE"
-mkdir -p "$UV_CACHE_DIR"
-mkdir -p "$PIP_CACHE_DIR"
-mkdir -p "$INSTALL_BASE/$ENV_NAME"
 
 if [ ! -w "$INSTALL_BASE" ]; then
     print_error "No write permission to $INSTALL_BASE"
     exit 1
 fi
+
+# Remove existing geo-stack environment for a clean install
+if [ -d "$INSTALL_BASE/$ENV_NAME" ]; then
+    print_warning "Existing geo-stack found at $INSTALL_BASE/$ENV_NAME. Removing..."
+    rm -rf "$INSTALL_BASE/$ENV_NAME"
+    print_success "Old geo-stack removed"
+fi
+
+mkdir -p "$UV_CACHE_DIR"
+mkdir -p "$PIP_CACHE_DIR"
+mkdir -p "$INSTALL_BASE/$ENV_NAME"
 
 cd "$INSTALL_BASE"
 print_success "Directories created"
@@ -339,11 +347,6 @@ fi
 # ============================================
 
 print_info "Creating Python virtual environment..."
-
-if [ -d "$INSTALL_BASE/$ENV_NAME/.venv" ]; then
-    print_warning "Virtual environment already exists. Removing old environment..."
-    rm -rf "$INSTALL_BASE/$ENV_NAME/.venv"
-fi
 
 # Create virtual environment with the specific Python version
 $PYTHON_CMD -m venv "$ENV_NAME/.venv"
@@ -684,23 +687,23 @@ print_warning "Installing GDAL Python bindings for Python $PYTHON_VERSION"
 # Clear any PYTHONPATH that might interfere
 unset PYTHONPATH
 
-# Install GDAL matching the system version if detected
+# Install GDAL matching the system version, built from source against system libs
 if [ -n "$GDAL_VERSION" ]; then
-    print_info "Installing GDAL==$GDAL_VERSION to match system GDAL"
-    install_packages gdal==$GDAL_VERSION || {
-        print_warning "Failed to install exact version, trying any compatible version..."
-        install_packages gdal
+    print_info "Building GDAL==$GDAL_VERSION from source against system GDAL libraries"
+    install_packages --no-binary gdal gdal==$GDAL_VERSION || {
+        print_warning "Source build failed, trying pre-built wheel as fallback..."
+        install_packages gdal==$GDAL_VERSION || install_packages gdal
     }
 else
     print_warning "No system GDAL version detected, installing default..."
-    install_packages gdal
+    install_packages --no-binary gdal gdal || install_packages gdal
 fi
 
 # Verify GDAL installation
 python -c "from osgeo import gdal; print(f'✓ GDAL {gdal.__version__} installed successfully')" || {
     print_error "GDAL installation verification failed"
     print_info "You may need to install GDAL manually with:"
-    print_info "  pip install gdal==$GDAL_VERSION"
+    print_info "  pip install --no-binary gdal gdal==$GDAL_VERSION"
 }
 
 # Install all other packages
@@ -760,12 +763,19 @@ else:
     print("⚠ Python appears to be in home directory")
 
 # Test critical imports
-critical = ['numpy', 'pandas', 'xarray', 'gdal', 'rasterio', 'netCDF4', 'torch']
+critical = ['numpy', 'pandas', 'xarray', 'osgeo.gdal', 'rasterio', 'netCDF4', 'torch']
 failed = []
 
 for pkg in critical:
     try:
-        mod = __import__(pkg)
+        # Handle dotted imports like osgeo.gdal
+        if '.' in pkg:
+            parts = pkg.split('.')
+            mod = __import__(pkg)
+            for part in parts[1:]:
+                mod = getattr(mod, part)
+        else:
+            mod = __import__(pkg)
         # Get version if available
         version = getattr(mod, '__version__', 'unknown')
         print(f"✓ {pkg} imported successfully (version: {version})")
@@ -884,28 +894,10 @@ Virtual Environment: $INSTALL_BASE/$ENV_NAME/.venv
 Package Count: 200+
 
 ============================================
-QUICK START (recommended method):
+USAGE:
 ============================================
 
   source $INSTALL_BASE/$ENV_NAME/activate.sh
-  cd $WORK_DIR
-
-============================================
-MANUAL ACTIVATION (if needed):
-============================================
-
-  # 1. FIRST: Add UV to PATH
-  export PATH="\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH"
-
-  # 2. Load modules
-  module purge
-  module load ${PYTHON_MODULE_NAME:-python}
-  module load ${GDAL_MODULE_NAME:-gdal}
-
-  # 3. Activate environment
-  source $INSTALL_BASE/$ENV_NAME/.venv/bin/activate
-
-  # 4. Navigate to working directory
   cd $WORK_DIR
 
 ============================================
@@ -941,41 +933,25 @@ echo "============================================"
 echo ""
 echo "✅ Your Python environment is ready!"
 echo ""
-echo -e "${GREEN}RECOMMENDED: Use the activation script:${NC}"
+echo -e "${GREEN}To activate, log out and back in, then run:${NC}"
 echo ""
 echo "  source $INSTALL_BASE/$ENV_NAME/activate.sh"
 echo ""
-echo "Or activate manually with these commands:"
-echo ""
-echo "  # 1. FIRST: Add UV to PATH (REQUIRED)"
-echo "  export PATH=\"\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH\""
-echo ""
-echo "  # 2. Load modules"
-if [ "$PYTHON_LOADED" = true ]; then
-    echo "  module purge"
-    echo "  module load $PYTHON_MODULE_NAME"
-fi
-if [ "$GDAL_LOADED" = true ]; then
-    echo "  module load $GDAL_MODULE_NAME"
-fi
-echo ""
-echo "  # 3. Activate environment"
-echo "  source $INSTALL_BASE/$ENV_NAME/.venv/bin/activate"
-echo ""
-echo "Then navigate to your working directory:"
-echo "  cd $WORK_DIR"
-echo ""
 echo "Installation Details:"
 echo "  Location: $INSTALL_BASE/$ENV_NAME"
-echo "  Python Version: $PYTHON_VERSION"
+echo "  Python: $PYTHON_VERSION"
 if [ -n "$GDAL_VERSION" ]; then
-    echo "  GDAL Version: $GDAL_VERSION"
+    echo "  GDAL: $GDAL_VERSION"
 fi
-echo "  Packages: 200+ scientific packages"
+if [ -n "$PYTHON_MODULE_NAME" ]; then
+    echo "  Python module: $PYTHON_MODULE_NAME"
+fi
+if [ -n "$GDAL_MODULE_NAME" ]; then
+    echo "  GDAL module: $GDAL_MODULE_NAME"
+fi
+echo "  Packages: 200+"
 echo ""
-echo "Note: A geo-stack configuration block has been added to ~/.bashrc"
-echo "      (conda deactivation, UV PATH, PYTHONNOUSERSITE)"
-echo "      New terminal sessions will be ready for: source $INSTALL_BASE/$ENV_NAME/activate.sh"
+echo "~/.bashrc has been updated (conda deactivation, UV PATH, PYTHONNOUSERSITE)."
 echo ""
 echo "============================================"
 echo ""
