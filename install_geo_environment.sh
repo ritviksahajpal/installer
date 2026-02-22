@@ -27,19 +27,47 @@ print_info() { echo -e "→ $1"; }
 # UV installs to ~/.local/bin or ~/.cargo/bin
 
 setup_uv_path() {
-    # Add both possible UV locations to PATH
+    # Add both possible UV locations to PATH for the current session
     export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-    
-    # Also add to .bashrc if not already there (for future sessions)
-    if ! grep -q 'export PATH="\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH"' ~/.bashrc 2>/dev/null; then
-        echo '' >> ~/.bashrc
-        echo '# UV package manager PATH (added by geo-stack installer)' >> ~/.bashrc
-        echo 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"' >> ~/.bashrc
-        print_success "Added UV PATH to ~/.bashrc for future sessions"
-    fi
 }
 
-# Call this immediately
+# Write a complete geo-stack block to ~/.bashrc (called later, after module detection)
+write_bashrc_block() {
+    local MARKER_BEGIN="# BEGIN geo-stack installer"
+    local MARKER_END="# END geo-stack installer"
+
+    # Remove any existing geo-stack block (idempotent)
+    if grep -q "$MARKER_BEGIN" ~/.bashrc 2>/dev/null; then
+        # Use sed to remove the old block
+        sed -i "/$MARKER_BEGIN/,/$MARKER_END/d" ~/.bashrc
+        print_info "Removed previous geo-stack block from ~/.bashrc"
+    fi
+
+    # Also remove the legacy single-line addition from older installer versions
+    sed -i '/# UV package manager PATH (added by geo-stack installer)/d' ~/.bashrc 2>/dev/null || true
+    sed -i '\|export PATH="\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH"|d' ~/.bashrc 2>/dev/null || true
+
+    # Write the new block
+    cat >> ~/.bashrc << BASHRC_BLOCK_EOF
+
+$MARKER_BEGIN
+# Deactivate conda base to avoid conflicts with geo-stack venv
+conda deactivate 2>/dev/null || true
+
+# UV package manager PATH
+export PATH="\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH"
+export UV_CACHE_DIR="$INSTALL_BASE/.uv-cache"
+
+# Prevent conda/user-site packages from leaking into geo-stack
+export PYTHONNOUSERSITE=1
+unset PYTHONPATH
+$MARKER_END
+BASHRC_BLOCK_EOF
+
+    print_success "Wrote geo-stack configuration block to ~/.bashrc"
+}
+
+# Call PATH setup immediately (bashrc block written later)
 setup_uv_path
 
 # ============================================
@@ -82,6 +110,8 @@ ENV_NAME="geo-stack"
 PYTHON_VERSION=""  # Will be detected from module
 GDAL_VERSION=""    # Will be detected from system
 PYTHON_CMD=""      # Will be set based on loaded module
+PYTHON_MODULE_NAME=""  # Will store the actual module name loaded
+GDAL_MODULE_NAME=""    # Will store the actual module name loaded
 
 # ============================================
 # VALIDATION
@@ -130,6 +160,7 @@ if command -v module &> /dev/null; then
             print_success "Loaded Python module: $py_module"
             PYTHON_LOADED=true
             PYTHON_CMD=python3.12
+            PYTHON_MODULE_NAME=$py_module
             break
         fi
     done
@@ -141,6 +172,7 @@ if command -v module &> /dev/null; then
                 print_success "Loaded Python module: $py_module"
                 PYTHON_LOADED=true
                 PYTHON_CMD=python3.11
+                PYTHON_MODULE_NAME=$py_module
                 break
             fi
         done
@@ -152,6 +184,7 @@ if command -v module &> /dev/null; then
             print_success "Loaded default Python module"
             PYTHON_LOADED=true
             PYTHON_CMD=python3
+            PYTHON_MODULE_NAME=python
         fi
     fi
     
@@ -171,6 +204,7 @@ if command -v module &> /dev/null; then
         if module load $gdal_module 2>/dev/null; then
             print_success "Loaded GDAL module: $gdal_module"
             GDAL_LOADED=true
+            GDAL_MODULE_NAME=$gdal_module
             
             # Check GDAL version from the loaded module
             if command -v gdalinfo &> /dev/null; then
@@ -739,12 +773,20 @@ for pkg in critical:
         print(f"✗ {pkg} import failed: {e}")
         failed.append(pkg)
 
-# Test geocif separately
+# Test geocif and geoprepare
 try:
     from geocif import geocif_runner
     print("✓ geocif imported successfully")
-except ImportError:
-    print("✗ geocif import failed (optional package)")
+except ImportError as e:
+    print(f"✗ geocif import failed: {e}")
+    failed.append('geocif')
+
+try:
+    import geoprepare
+    print(f"✓ geoprepare imported successfully (version: {getattr(geoprepare, '__version__', 'unknown')})")
+except ImportError as e:
+    print(f"✗ geoprepare import failed: {e}")
+    failed.append('geoprepare')
 
 if not failed:
     print("\n✅ All critical packages verified!")
@@ -760,34 +802,71 @@ VERIFY_EOF
 
 print_info "Creating activation helper script..."
 
-cat > "$INSTALL_BASE/$ENV_NAME/activate.sh" << ACTIVATE_EOF
+cat > "$INSTALL_BASE/$ENV_NAME/activate.sh" << 'ACTIVATE_HEAD'
 #!/bin/bash
 # Activation script for geo-stack environment
+ACTIVATE_HEAD
+
+# Write the parts that need variable expansion (paths, module names)
+cat >> "$INSTALL_BASE/$ENV_NAME/activate.sh" << ACTIVATE_VARS
 # Source this file: source $INSTALL_BASE/$ENV_NAME/activate.sh
+GEO_VENV="$INSTALL_BASE/$ENV_NAME/.venv"
+PYTHON_MODULE="$PYTHON_MODULE_NAME"
+GDAL_MODULE="$GDAL_MODULE_NAME"
+ACTIVATE_VARS
 
-# Step 1: Add UV to PATH (required for package management)
-export PATH="\$HOME/.local/bin:\$HOME/.cargo/bin:\$PATH"
+# Write the rest with no variable expansion (logic)
+cat >> "$INSTALL_BASE/$ENV_NAME/activate.sh" << 'ACTIVATE_BODY'
 
-# Step 2: Load modules (if available)
-if command -v module &> /dev/null; then
-    module purge 2>/dev/null || true
-    module load python/3.12.9/anaconda 2>/dev/null || module load python/3.11.7/anaconda 2>/dev/null || true
-    module load rh9/gdal/3.11.0 2>/dev/null || module load gdal 2>/dev/null || true
+# Guard: skip if already activated
+if [[ "$VIRTUAL_ENV" == *"geo-stack"* ]]; then
+    echo "geo-stack is already active"
+    return 0 2>/dev/null || exit 0
 fi
 
-# Step 3: Clear PYTHONPATH to avoid conflicts
-unset PYTHONPATH
+# Step 1: Deactivate conda environments to avoid conflicts
+while [[ -n "$CONDA_DEFAULT_ENV" ]]; do
+    conda deactivate 2>/dev/null || break
+done
 
-# Step 4: Activate virtual environment
-source "$INSTALL_BASE/$ENV_NAME/.venv/bin/activate"
+# Step 2: Add UV to PATH
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+
+# Step 3: Load modules (if available)
+if command -v module &> /dev/null; then
+    module purge 2>/dev/null || true
+    if [[ -n "$PYTHON_MODULE" ]]; then
+        module load "$PYTHON_MODULE" 2>/dev/null || true
+    fi
+    if [[ -n "$GDAL_MODULE" ]]; then
+        module load "$GDAL_MODULE" 2>/dev/null || true
+    fi
+fi
+
+# Step 4: Prevent package leakage
+unset PYTHONPATH
+export PYTHONNOUSERSITE=1
+
+# Step 5: Activate virtual environment
+source "$GEO_VENV/bin/activate"
 
 echo "✓ geo-stack environment activated"
-echo "  Python: \$(which python)"
-echo "  UV: \$(which uv 2>/dev/null || echo 'not found')"
-ACTIVATE_EOF
+echo "  Python: $(which python) ($(python --version 2>&1))"
+echo "  UV: $(which uv 2>/dev/null || echo 'not found')"
+
+# Quick sanity check for GDAL
+python -c "from osgeo import gdal" 2>/dev/null && echo "  GDAL: OK" || echo "  ⚠ GDAL import failed — check module loading"
+ACTIVATE_BODY
 
 chmod +x "$INSTALL_BASE/$ENV_NAME/activate.sh"
 print_success "Activation script created: $INSTALL_BASE/$ENV_NAME/activate.sh"
+
+# ============================================
+# UPDATE ~/.bashrc
+# ============================================
+
+print_info "Updating ~/.bashrc with geo-stack configuration..."
+write_bashrc_block
 
 # ============================================
 # SAVE INSTALLATION INFO
@@ -820,8 +899,8 @@ MANUAL ACTIVATION (if needed):
 
   # 2. Load modules
   module purge
-  module load python/3.12.9/anaconda
-  module load rh9/gdal/3.11.0
+  module load ${PYTHON_MODULE_NAME:-python}
+  module load ${GDAL_MODULE_NAME:-gdal}
 
   # 3. Activate environment
   source $INSTALL_BASE/$ENV_NAME/.venv/bin/activate
@@ -874,10 +953,10 @@ echo ""
 echo "  # 2. Load modules"
 if [ "$PYTHON_LOADED" = true ]; then
     echo "  module purge"
-    echo "  module load python/3.12.9/anaconda"
+    echo "  module load $PYTHON_MODULE_NAME"
 fi
 if [ "$GDAL_LOADED" = true ]; then
-    echo "  module load rh9/gdal/3.11.0"
+    echo "  module load $GDAL_MODULE_NAME"
 fi
 echo ""
 echo "  # 3. Activate environment"
@@ -894,8 +973,9 @@ if [ -n "$GDAL_VERSION" ]; then
 fi
 echo "  Packages: 200+ scientific packages"
 echo ""
-echo "Note: UV PATH has been added to your ~/.bashrc"
-echo "      New terminal sessions will have UV available automatically."
+echo "Note: A geo-stack configuration block has been added to ~/.bashrc"
+echo "      (conda deactivation, UV PATH, PYTHONNOUSERSITE)"
+echo "      New terminal sessions will be ready for: source $INSTALL_BASE/$ENV_NAME/activate.sh"
 echo ""
 echo "============================================"
 echo ""

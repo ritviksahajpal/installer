@@ -1,227 +1,182 @@
 # Python Geospatial Environment Installer
 
-A robust installer script for setting up a comprehensive Python environment with 200+ geospatial, climate, and scientific computing packages on HPC clusters and Linux systems.
+A robust installer script for setting up a comprehensive Python environment with 200+ geospatial, climate, and scientific computing packages on HPC clusters. Designed for running **geocif** and **geoprepare** on UMD gsapp systems.
 
-## Features
-
-- 🚀 **Fast Installation**: Uses UV package manager (10-100x faster than pip)
-- 🌍 **200+ Packages**: Complete geospatial and scientific Python stack
-- 🖥️ **HPC Optimized**: Automatic module detection and loading
-- 💾 **Smart Storage**: Installs to data partitions, not home directory
-- 🔧 **Version Matching**: Automatically matches Python GDAL to system GDAL
-- ✅ **Verification**: Built-in package verification after installation
-
-## Quick Start
-
-### For UMD HPC Systems
+## Quick Start (gsapp HPC)
 
 ```bash
-# Download the installer
+# 1. Download the installer
 wget https://raw.githubusercontent.com/ritviksahajpal/installer/main/install_geo_environment.sh
 
-# Run with your paths
-bash install_geo_environment.sh "/gpfs/data1/cmongp1/$USER" "/path/to/your/project"
+# 2. Run it (interactive — will prompt for paths)
+bash install_geo_environment.sh
+
+# Or run with arguments to skip prompts:
+bash install_geo_environment.sh "/gpfs/data1/cmongp1/$USER" "/gpfs/data1/cmongp1/GEOGLAM/Code/Code/preprocess"
+
+# 3. Log out and back in (so ~/.bashrc changes take effect), then activate:
+source /gpfs/data1/cmongp1/$USER/geo-stack/activate.sh
+
+# 4. Navigate to your working directory and run geocif/geoprepare
+cd /gpfs/data1/cmongp1/GEOGLAM/Code/Code/preprocess
 ```
 
-### For Cloud/Generic Linux
+## What the Installer Does
+
+1. **Installs UV** — a fast Python package manager (10-100x faster than pip)
+2. **Detects and loads modules** — finds the best available Python and GDAL modules on the cluster
+3. **Creates a virtual environment** — isolated from conda and system Python
+4. **Installs 200+ packages** — including geocif, geoprepare, and all their dependencies
+5. **Generates `activate.sh`** — a self-contained activation script that handles modules, conda conflicts, and environment setup
+6. **Configures `~/.bashrc`** — adds a clearly marked block that deactivates conda and sets up UV PATH for future sessions
+
+## Activation
+
+After installation, always activate with:
 
 ```bash
-# Download the cloud version
-wget https://raw.githubusercontent.com/ritviksahajpal/installer/main/install_geo_environment_cloud.sh
-
-# Run with local paths
-bash install_geo_environment_cloud.sh "$HOME/geo-env" "$HOME/projects"
+source /gpfs/data1/cmongp1/$USER/geo-stack/activate.sh
 ```
+
+The activation script automatically:
+- Deactivates any active conda environments (prevents conflicts)
+- Loads the correct Python and GDAL modules (detected during install)
+- Sets `PYTHONNOUSERSITE=1` and clears `PYTHONPATH`
+- Activates the virtual environment
+- Runs a GDAL sanity check
+
+It also guards against double-activation — running it twice is harmless.
 
 ## What Gets Installed
 
 ### Core Geospatial Stack
-- **GDAL** - Geospatial Data Abstraction Library
-- **Rasterio** - Raster data I/O
-- **GeoPandas** - Geospatial pandas operations
-- **Shapely** - Geometric operations
-- **Cartopy** - Cartographic projections
-- **Fiona** - Vector data I/O
+- **GDAL** — Geospatial Data Abstraction Library (matched to system version)
+- **Rasterio** — Raster data I/O
+- **GeoPandas** — Geospatial pandas operations
+- **Shapely** — Geometric operations
+- **Cartopy** — Cartographic projections
+- **Fiona** — Vector data I/O
 
 ### Climate & Weather Tools
-- **XArray** - N-dimensional labeled arrays
-- **NetCDF4** - NetCDF file support
-- **cfgrib** - GRIB file handling
-- **xclim** - Climate indices calculation
-- **ERA5/ECMWF tools** - Weather data access
+- **XArray** — N-dimensional labeled arrays
+- **NetCDF4** — NetCDF file support
+- **cfgrib** — GRIB file handling
+- **xclim** — Climate indices calculation
+- **cdsapi / ecmwf tools** — Weather data access
 
 ### Machine Learning & AI
-- **PyTorch** - Deep learning framework
-- **Scikit-learn** - Machine learning library
-- **CatBoost** - Gradient boosting
-- **SHAP** - Model interpretability
-- **Optuna** - Hyperparameter optimization
-- **geocif** - ML Yield model
+- **PyTorch** — Deep learning framework
+- **Scikit-learn** — Machine learning library
+- **CatBoost** — Gradient boosting
+- **SHAP** — Model interpretability
+- **Optuna** — Hyperparameter optimization
+
+### GEOGLAM Packages
+- **geocif** — ML crop yield model
+- **geoprepare** — Geospatial data preprocessing
+- **octvi** — Vegetation indices
+- **pygeoutil** — Geospatial utilities
 
 ### Data Processing
-- **Pandas** - Data analysis
-- **NumPy** - Numerical computing
-- **Dask** - Parallel computing
-- **SciPy** - Scientific computing
-- **Statsmodels** - Statistical modeling
+- **Pandas**, **NumPy**, **Dask**, **SciPy**, **Statsmodels**
 
 ### Cloud & Remote Sensing
-- **Earth Engine API** - Google Earth Engine
-- **Boto3** - AWS services
+- **Earth Engine API**, **Boto3** (AWS), **Azure Storage**
 
-### Custom Packages
-- **octvi** - Vegetation indices
-- **pygeoutil** - Geospatial utilities
+## What Changes in ~/.bashrc
+
+The installer adds a clearly delimited block to `~/.bashrc`:
+
+```bash
+# BEGIN geo-stack installer
+conda deactivate 2>/dev/null || true
+export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+export UV_CACHE_DIR="/gpfs/data1/cmongp1/$USER/.uv-cache"
+export PYTHONNOUSERSITE=1
+unset PYTHONPATH
+# END geo-stack installer
+```
+
+This block is **idempotent** — re-running the installer replaces it rather than duplicating it. It also cleans up legacy single-line additions from older installer versions.
 
 ## Requirements
 
-### System Requirements
-- Linux OS (RHEL, Ubuntu, Debian, Amazon Linux)
-- Python 3.9+ (3.12 recommended)
-- 10GB free disk space
-- Internet connection
-
-### HPC Specific
+- Linux (gsapp HPC nodes)
 - Module system (`module` command)
+- Python 3.9+ module available (3.12 recommended)
 - GDAL module available
-- Access to data partition (e.g., `/gpfs/`)
-
-## Installation Guide
-
-### Step 1: Choose Your Version
-
-- **HPC Version** (`install_geo_environment.sh`): For clusters with module systems
-- **Cloud Version** (`install_geo_environment_cloud.sh`): For AWS, Azure, GCP, or local Linux
-
-### Step 2: Run the Installer
-
-#### UMD HPC Installation
-
-```bash
-# The installer will automatically:
-# 1. Load Python module (3.12 or 3.11)
-# 2. Load GDAL module
-# 3. Create virtual environment
-# 4. Install all packages
-
-bash install_geo_environment.sh "/data/partition/$USER" "/project/path"
-```
-
-#### Cloud/Local Installation
-
-```bash
-# For systems without module support
-bash install_geo_environment_cloud.sh "$HOME/geo-env" "$HOME/projects"
-```
-
-### Step 3: Activate Your Environment
-
-#### UMD HPC Systems
-```bash
-module purge
-module load python/3.12.9/anaconda  # Or your Python module
-module load rh9/gdal/3.11.0        # Or your GDAL module
-source /path/to/installation/geo-stack/.venv/bin/activate
-```
-
-#### Cloud/Local Systems
-```bash
-source ~/geo-env/geo-stack/.venv/bin/activate
-```
-
-## Configuration Options
-
-### Custom Installation Paths
-
-Edit the script to change default paths:
-```bash
-# In the script, modify:
-ENV_NAME="geo-stack"  # Change environment name
-INSTALL_BASE="/custom/path"  # Change installation location
-```
-
-### Python Version Selection
-
-The installer automatically selects the best Python version. To force a specific version:
-```bash
-# Load your preferred Python before running
-module load python/3.11.7/anaconda
-bash install_geo_environment.sh "/path" "/project"
-```
-
-## Troubleshooting
-
-### GDAL Version Mismatch
-```bash
-# Check system GDAL version
-gdalinfo --version
-
-# Install matching Python bindings
-source /path/to/env/.venv/bin/activate
-uv pip install gdal==3.11.0  # Match your system version
-```
-
-### Module Not Found
-```bash
-# List available modules
-module avail python
-module avail gdal
-
-# Load appropriate modules
-module load python/3.12
-module load gdal/3.11
-```
-
-### Permission Issues
-```bash
-# Check write permissions
-ls -la /installation/path/
-
-# Use a different path if needed
-bash install_geo_environment.sh "$HOME/local" "$HOME/projects"
-```
-
-### Package Installation Failures
-```bash
-# Activate environment and install manually
-source /path/to/env/.venv/bin/activate
-uv pip install problem_package
-```
+- ~10GB free disk space on the data partition
+- Internet connection (for downloading packages)
 
 ## Directory Structure
 
-After installation, you'll have:
+After installation:
 ```
-installation_path/
+/gpfs/data1/cmongp1/$USER/
 ├── geo-stack/
 │   ├── .venv/                 # Python virtual environment
+│   ├── activate.sh            # Activation script (use this!)
 │   ├── requirements.txt       # Package list
-│   └── installation_info.txt  # Installation details
+│   └── installation_info.txt  # Installation details and troubleshooting
 ├── .uv-cache/                 # UV package cache
 └── .pip-cache/                # Pip cache
 ```
 
-## Performance
+## Troubleshooting
 
-- **With UV**: 10-15 minutes for complete installation
-- **Without UV**: 1-2 hours (fallback to pip)
-- **Disk usage**: ~8-10GB
-- **Package count**: 200+
+### GDAL import fails after activation
+```bash
+# Check what GDAL version the module provides
+module load rh9/gdal/3.11.0   # or whatever module was detected
+gdalinfo --version
+
+# Reinstall matching Python bindings
+source /gpfs/data1/cmongp1/$USER/geo-stack/activate.sh
+uv pip install gdal==3.11.0   # match the version above
+```
+
+### Conda is interfering
+The installer's `~/.bashrc` block deactivates conda automatically. If you still see `(base)` in your prompt after a fresh login, check that the geo-stack block appears **after** the conda initialization block in `~/.bashrc`.
+
+### Double `(geo-stack)` prompt
+The new `activate.sh` has a guard against this. If you see it with an older install, re-run the installer to regenerate `activate.sh`.
+
+### Package installation failures
+```bash
+source /gpfs/data1/cmongp1/$USER/geo-stack/activate.sh
+uv pip install package_name
+```
+
+### Permission issues
+```bash
+# The installer needs write access to INSTALL_BASE
+# Default: /gpfs/data1/cmongp1/$USER
+ls -la /gpfs/data1/cmongp1/$USER/
+```
 
 ## Updating Packages
 
 ```bash
-# Activate environment first
-source /path/to/env/.venv/bin/activate
+source /gpfs/data1/cmongp1/$USER/geo-stack/activate.sh
 
-# Update specific package
-uv pip install --upgrade package_name
+# Update a specific package
+uv pip install --upgrade geocif
 
 # Update all packages
-uv pip install --upgrade -r /path/to/geo-stack/requirements.txt
+uv pip install --upgrade -r /gpfs/data1/cmongp1/$USER/geo-stack/requirements.txt
 ```
+
+## For Other Users on gsapp
+
+Any user on gsapp can run the installer with their own paths:
+
+```bash
+wget https://raw.githubusercontent.com/ritviksahajpal/installer/main/install_geo_environment.sh
+bash install_geo_environment.sh "/gpfs/data1/cmongp1/$USER" "/gpfs/data1/cmongp1/GEOGLAM/Code/Code/preprocess"
+```
+
+The installer will detect the available modules on the system and configure everything automatically. Each user gets their own independent environment.
 
 ## License
 
 MIT License - See LICENSE file for details
-
