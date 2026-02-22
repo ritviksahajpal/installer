@@ -211,6 +211,12 @@ if command -v module &> /dev/null; then
                 GDAL_VERSION=$(gdalinfo --version | grep -oP 'GDAL \K[0-9]+\.[0-9]+\.[0-9]+' || echo "")
                 print_info "System GDAL version: $GDAL_VERSION"
 
+                # Capture GDAL library directory — critical for correct runtime linking
+                GDAL_LIB_DIR=$(gdal-config --libs 2>/dev/null | grep -oP '(?<=-L)\S+' || true)
+                if [ -n "$GDAL_LIB_DIR" ]; then
+                    print_info "GDAL library dir: $GDAL_LIB_DIR"
+                fi
+
                 # Save PYTHONPATH set by the GDAL module — it points to pre-built bindings
                 GDAL_MODULE_PYTHONPATH="${PYTHONPATH:-}"
                 if [ -n "$GDAL_MODULE_PYTHONPATH" ]; then
@@ -722,21 +728,33 @@ if [ -n "$GDAL_MODULE_PYTHONPATH" ]; then
     done
 fi
 
-# Strategy 2: pip source build against system GDAL
+# Strategy 2: pip source build against system GDAL with correct RPATH
 if [ "$GDAL_INSTALLED" = false ]; then
     print_info "Building GDAL from source as fallback..."
 
     if command -v gdal-config &> /dev/null; then
         export GDAL_CONFIG=$(which gdal-config)
-        GDAL_LIB_DIR=$(gdal-config --libs 2>/dev/null | grep -oP '(?<=-L)\S+' || true)
         print_info "Found gdal-config: $GDAL_CONFIG"
+
+        # CRITICAL: Ensure GDAL module's lib is FIRST in LD_LIBRARY_PATH
+        # The anaconda Python module may bundle its own older libgdal.so
         if [ -n "$GDAL_LIB_DIR" ]; then
-            export LD_LIBRARY_PATH="$GDAL_LIB_DIR:${LD_LIBRARY_PATH:-}"
+            export LD_LIBRARY_PATH="${GDAL_LIB_DIR}:${LD_LIBRARY_PATH:-}"
+            print_info "Prepended $GDAL_LIB_DIR to LD_LIBRARY_PATH"
+
+            # Embed RPATH so the built .so always finds the correct libgdal.so
+            # This prevents runtime failures when anaconda's libgdal shadows the module's
+            GDAL_INCLUDE_DIR=$(gdal-config --cflags 2>/dev/null | grep -oP '(?<=-I)\S+' || true)
+            export LDFLAGS="-L${GDAL_LIB_DIR} -Wl,-rpath,${GDAL_LIB_DIR}"
+            if [ -n "$GDAL_INCLUDE_DIR" ]; then
+                export CFLAGS="-I${GDAL_INCLUDE_DIR}"
+            fi
+            print_info "Set LDFLAGS with RPATH to ${GDAL_LIB_DIR}"
         fi
     fi
 
     if [ -n "$GDAL_VERSION" ]; then
-        print_info "Building GDAL==$GDAL_VERSION from source"
+        print_info "Building GDAL==$GDAL_VERSION from source (with RPATH for correct lib linking)"
         pip install --no-cache-dir --no-binary gdal gdal==$GDAL_VERSION || {
             print_warning "Source build failed, trying pre-built wheel..."
             install_packages gdal==$GDAL_VERSION || install_packages gdal
@@ -744,6 +762,9 @@ if [ "$GDAL_INSTALLED" = false ]; then
     else
         pip install --no-cache-dir --no-binary gdal gdal || install_packages gdal
     fi
+
+    # Clean up build flags so they don't affect other packages
+    unset LDFLAGS CFLAGS
 fi
 
 # Verify GDAL installation
@@ -870,6 +891,7 @@ cat >> "$INSTALL_BASE/$ENV_NAME/activate.sh" << ACTIVATE_VARS
 GEO_VENV="$INSTALL_BASE/$ENV_NAME/.venv"
 PYTHON_MODULE="$PYTHON_MODULE_NAME"
 GDAL_MODULE="$GDAL_MODULE_NAME"
+GDAL_LIB="${GDAL_LIB_DIR}"
 ACTIVATE_VARS
 
 # Write the rest with no variable expansion (logic)
@@ -900,11 +922,18 @@ if command -v module &> /dev/null; then
     fi
 fi
 
-# Step 4: Prevent package leakage
+# Step 4: Ensure GDAL module's library dir takes priority over anaconda's
+# The anaconda Python module may bundle an older libgdal.so that shadows the
+# GDAL module's version, causing "undefined symbol" errors at import time.
+if [[ -n "$GDAL_LIB" ]] && [[ -d "$GDAL_LIB" ]]; then
+    export LD_LIBRARY_PATH="${GDAL_LIB}:${LD_LIBRARY_PATH:-}"
+fi
+
+# Step 5: Prevent package leakage
 unset PYTHONPATH
 export PYTHONNOUSERSITE=1
 
-# Step 5: Activate virtual environment
+# Step 6: Activate virtual environment
 source "$GEO_VENV/bin/activate"
 
 echo "✓ geo-stack environment activated"
