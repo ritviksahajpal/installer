@@ -375,30 +375,43 @@ def install_geocif(
     # published geocif metadata. Idempotent — becomes a no-op once everything
     # is in the env. Mirrors the latest geocif/pyproject.toml core deps.
     # TODO: remove once the matching geocif release is on PyPI.
-    info("Ensuring supplemental deps (core, spatial, ML pipeline)")
-    run([uv, "pip", "install",
-         # Original belt-and-suspenders set
-         "cartopy>=0.22", "Rbeast>=0.1.20", "scikit-learn>=1.4",
-         "bottleneck>=1.3", "cachetools>=5.0", "geopy>=2.0",
-         "scikit-image>=0.21",
-         # Core production imports (viz/utils/feature_engineering)
-         "mapclassify>=2.5", "pymannkendall>=1.4", "pangres>=4.0",
-         "kneed>=0.8", "lifelines>=0.27",
-         # Spatial production (production_analysis/beast_spatial.py)
-         "esda>=2.5", "libpysal>=4.10",
-         # ML pipeline alternative model backends (ml/trainers.py)
-         "crepes>=0.6", "cubist>=0.0.20", "mapie>=0.8", "merf>=1.0",
-         "ngboost>=0.5", "tabpfn-extensions>=0.0.1", "treeple>=0.10",
-         "ydf>=0.6",
-         # ML feature selection (ml/feature_selection.py)
-         "BorutaShap>=1.0", "arfs>=2.0", "fasttreeshap>=0.1",
-         "feature-engine>=1.6", "mrmr-selection>=0.2", "powershap>=0.0.10",
-         "sklearn-genetic-opt>=0.10", "stabl>=1.0",
-         # Geoprepare's real transitive deps (declared in geoprepare 0.6.260+
-         # but kept here as a fallback for older PyPI versions)
-         "pyresample", "cdsapi", "pymodis", "pyl4c", "beautifulsoup4",
-         "wget", "rioxarray", "affine",
-        ], env=env)
+    #
+    # Names only (no version pins). Pinning ad-hoc versions is fragile —
+    # if a single pin is unsatisfiable on PyPI (e.g. `stabl>=1.0` when only
+    # 0.0.1 is published), uv's resolver fails the whole batch.
+    #
+    # Split into small groups with check=False so one broken/missing
+    # package doesn't abort the whole step.
+    supplemental_groups = {
+        "core": [
+            "cartopy", "Rbeast", "scikit-learn", "bottleneck",
+            "cachetools", "geopy", "scikit-image",
+            "mapclassify", "pymannkendall", "pangres", "kneed", "lifelines",
+        ],
+        "spatial (esda/libpysal — used by beast_spatial.py)": [
+            "esda", "libpysal",
+        ],
+        "ML trainers (ml/trainers.py)": [
+            "crepes", "cubist", "mapie", "merf", "ngboost",
+            "tabpfn-extensions", "treeple", "ydf",
+            "desReg", "geospaNN",
+        ],
+        "ML feature selection (ml/feature_selection.py)": [
+            "BorutaShap", "arfs", "fasttreeshap", "feature-engine",
+            "mrmr-selection", "powershap", "sklearn-genetic-opt",
+            "stabl",  # PyPI has 0.0.1 placeholder; if you need full impl,
+                      # install from github manually after this.
+        ],
+        "geoprepare's real transitive deps": [
+            "pyresample", "cdsapi", "pymodis", "pyl4c", "beautifulsoup4",
+            "wget", "rioxarray", "affine",
+        ],
+    }
+    for label, pkgs in supplemental_groups.items():
+        info(f"Supplemental ({label})")
+        result = run([uv, "pip", "install", *pkgs], env=env, check=False)
+        if result.returncode != 0:
+            warn(f"  Group '{label}' had install issues — see above; continuing")
 
     # pygeoutil is git-only (not on PyPI) and is imported by geocif/viz/plot.py.
     # PyPI forbids URL deps in published packages, so geocif's pyproject can't
