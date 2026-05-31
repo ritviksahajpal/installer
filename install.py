@@ -16,7 +16,7 @@ Stdlib-only; requires Python 3.8+ to bootstrap (uv handles the target Python).
 
 from __future__ import annotations
 
-__version__ = "0.4.2"
+__version__ = "0.4.3"
 
 import argparse
 import contextlib
@@ -375,6 +375,64 @@ def venv_python(venv_dir: pathlib.Path, platform: str) -> pathlib.Path:
         return venv_dir / "Scripts" / "python.exe"
     return venv_dir / "bin" / "python"
 
+def _patchelf_osgeo_libgdal(venv_dir: pathlib.Path, gdal_lib_dir: str) -> None:
+    """Rewrite osgeo/_*.so NEEDED entries so they request the module's libgdal
+    soname (e.g. libgdal.so.37) instead of whatever older one the linker
+    happened to find (e.g. anaconda's libgdal.so.36).
+
+    See callsite for the full rationale. Assumes patchelf has already been
+    installed into the venv (we add it to GDAL build deps).
+    """
+    patchelf = venv_dir / "bin" / "patchelf"
+    if not patchelf.exists():
+        warn(f"patchelf binary not in venv ({patchelf}); skipping soname patch")
+        return
+
+    # Resolve the target SONAME from the module's libgdal.so (a symlink).
+    libgdal_canonical = pathlib.Path(gdal_lib_dir) / "libgdal.so"
+    if not libgdal_canonical.exists():
+        warn(f"{libgdal_canonical} not found; skipping soname patch")
+        return
+    r = subprocess.run(
+        [str(patchelf), "--print-soname", str(libgdal_canonical)],
+        capture_output=True, text=True, check=False,
+    )
+    target = (r.stdout or "").strip()
+    if not target:
+        warn(f"Could not read SONAME from {libgdal_canonical}; skipping soname patch")
+        return
+    info(f"Target libgdal SONAME: {target}")
+
+    osgeo_dir = None
+    for pylib in (venv_dir / "lib").glob("python*"):
+        cand = pylib / "site-packages" / "osgeo"
+        if cand.exists():
+            osgeo_dir = cand
+            break
+    if not osgeo_dir:
+        warn("osgeo/ dir not found in venv; skipping soname patch")
+        return
+
+    patched = 0
+    for so in sorted(osgeo_dir.glob("_*.so")):
+        n = subprocess.run(
+            [str(patchelf), "--print-needed", str(so)],
+            capture_output=True, text=True, check=False,
+        )
+        for line in (n.stdout or "").splitlines():
+            line = line.strip()
+            if line.startswith("libgdal.so.") and line != target:
+                subprocess.run(
+                    [str(patchelf), "--replace-needed", line, target, str(so)],
+                    check=True,
+                )
+                info(f"  {so.name}: {line} -> {target}")
+                patched += 1
+    if patched:
+        ok(f"patchelf: rewrote {patched} libgdal NEEDED entries to {target}")
+    else:
+        ok(f"patchelf: all osgeo extensions already reference {target}")
+
 def install_geocif(
     uv: str,
     venv_dir: pathlib.Path,
@@ -504,9 +562,9 @@ def install_geocif(
     # else; --no-binary gdal forces source build; --no-build-isolation uses the
     # venv's setuptools/numpy/cython for ABI consistency.
     if platform == "umd_hpc" and gdal_lib_dir and gdal_env is not None:
-        info("Installing GDAL build deps (setuptools, wheel, numpy, cython)")
+        info("Installing GDAL build deps (setuptools, wheel, numpy, cython, patchelf)")
         run([uv, "pip", "install",
-             "setuptools<81", "wheel", "numpy", "cython"], env=env)
+             "setuptools<81", "wheel", "numpy", "cython", "patchelf"], env=env)
         info(f"Final source build of GDAL==3.11.0 against module libgdal at {gdal_lib_dir} (overwrites any wheel uv installed)")
         # --no-cache to avoid reusing a previous broken build artifact.
         run([uv, "pip", "install",
@@ -515,6 +573,18 @@ def install_geocif(
              "--no-cache",
              "--force-reinstall", "--no-deps",
              "gdal==3.11.0"], env=gdal_env)
+
+        # Post-build patchelf: anaconda Python's baked-in LDSHARED puts
+        # /apps/python/.../anaconda3/lib EARLIER in the link line than our
+        # LDFLAGS' -L<gdal_lib_dir>. So `-lgdal` resolves to anaconda's older
+        # libgdal.so.<N> (e.g. .so.36 = GDAL 3.10), and that soname gets
+        # baked into NEEDED entries of every osgeo/_*.so. At runtime the
+        # loader picks up anaconda's libgdal — symbol mismatch
+        # ("undefined symbol: CPLQuietWarningsErrorHandler" etc.).
+        # Rewriting NEEDED to the module's soname (e.g. libgdal.so.37) makes
+        # the loader pick up the module's libgdal, which DOES have the symbols
+        # the bindings were compiled against (gdal-config 3.11 headers).
+        _patchelf_osgeo_libgdal(venv_dir, gdal_lib_dir)
 
         # Sanity check: look specifically for the _gdal extension (NOT
         # _gdalconst, _gdal_array, etc. — those are separate, smaller
