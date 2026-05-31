@@ -1,0 +1,786 @@
+#!/usr/bin/env python3
+"""
+Cross-platform installer for geocif + geoprepare.
+
+Detects platform (Windows / UMD HPC / generic Linux / macOS) and provisions a
+Python 3.11 (3.12 on HPC) virtual environment with geocif installed. All
+dependency resolution is delegated to uv and geocif/pyproject.toml.
+
+Usage:
+    python install.py [--install-base DIR] [--editable PATH] [--editable-geoprepare PATH]
+                      [--platform {auto,windows,umd_hpc,linux,macos}]
+                      [--write-shell-rc]
+
+Stdlib-only; requires Python 3.8+ to bootstrap (uv handles the target Python).
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import os
+import pathlib
+import platform as platform_mod
+import shutil
+import subprocess
+import sys
+import textwrap
+import urllib.request
+
+# -------- ANSI colors (auto-disabled on non-TTY / Windows legacy) --------
+
+_USE_COLOR = sys.stdout.isatty() and os.environ.get("NO_COLOR") is None
+_C = {
+    "red":    "\033[0;31m" if _USE_COLOR else "",
+    "green":  "\033[0;32m" if _USE_COLOR else "",
+    "yellow": "\033[1;33m" if _USE_COLOR else "",
+    "reset":  "\033[0m"    if _USE_COLOR else "",
+}
+
+def ok(msg: str) -> None:     print(f"{_C['green']}[ok]{_C['reset']}  {msg}")
+def err(msg: str) -> None:    print(f"{_C['red']}[err]{_C['reset']} {msg}", file=sys.stderr)
+def warn(msg: str) -> None:   print(f"{_C['yellow']}[!]{_C['reset']}   {msg}")
+def info(msg: str) -> None:   print(f"->    {msg}")
+
+# -------- Platform detection --------
+
+UMD_HPC_MARKER = pathlib.Path("/gpfs/data1/cmongp1")
+
+def detect_platform() -> str:
+    if sys.platform == "win32":
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    if sys.platform.startswith("linux"):
+        if is_umd_hpc():
+            return "umd_hpc"
+        return "linux"
+    raise SystemExit(f"Unsupported platform: {sys.platform}")
+
+def is_umd_hpc() -> bool:
+    has_lmod = bool(os.environ.get("LMOD_CMD")) or bool(shutil.which("lmod"))
+    return has_lmod and UMD_HPC_MARKER.exists()
+
+# -------- Subprocess helpers --------
+
+def run(cmd, *, env=None, check=True, capture=False, shell=False, cwd=None):
+    """Run a command; print it; surface stderr on failure."""
+    if isinstance(cmd, list):
+        printable = " ".join(cmd)
+    else:
+        printable = cmd
+    info(f"$ {printable}")
+    result = subprocess.run(
+        cmd, env=env, shell=shell, cwd=cwd,
+        stdout=subprocess.PIPE if capture else None,
+        stderr=subprocess.PIPE if capture else None,
+        text=True,
+    )
+    if check and result.returncode != 0:
+        if capture and result.stderr:
+            err(result.stderr.strip())
+        raise SystemExit(f"Command failed (exit {result.returncode}): {printable}")
+    return result
+
+def run_bash(script: str, *, env=None, check=True, capture=False):
+    """Run a bash snippet (Linux/macOS only). Non-login shell (`-c`, not `-lc`)
+    so we don't inherit the user's conda init from ~/.bashrc. Scripts that need
+    `module` must source /etc/profile.d/modules.sh themselves."""
+    return run(["bash", "-c", script], env=env, check=check, capture=capture)
+
+# -------- uv installer --------
+
+def ensure_uv(platform: str) -> str:
+    """Install uv if missing; return absolute path to the uv binary."""
+    uv = shutil.which("uv")
+    if uv:
+        ok(f"uv found: {uv}")
+        return uv
+
+    info("Installing uv...")
+    if platform == "windows":
+        ps_cmd = (
+            "powershell -ExecutionPolicy ByPass -NoProfile -Command "
+            "\"irm https://astral.sh/uv/install.ps1 | iex\""
+        )
+        run(ps_cmd, shell=True)
+        candidate = pathlib.Path(os.environ["USERPROFILE"]) / ".local" / "bin" / "uv.exe"
+    else:
+        # curl-or-wget piped to sh, official Astral path
+        if shutil.which("curl"):
+            run("curl -LsSf https://astral.sh/uv/install.sh | sh", shell=True)
+        elif shutil.which("wget"):
+            run("wget -qO- https://astral.sh/uv/install.sh | sh", shell=True)
+        else:
+            raise SystemExit("Need curl or wget to install uv.")
+        candidate = pathlib.Path.home() / ".local" / "bin" / "uv"
+
+    # uv installer drops to ~/.local/bin (or %USERPROFILE%\.local\bin on Windows)
+    if candidate.exists():
+        ok(f"uv installed: {candidate}")
+        return str(candidate)
+
+    # Last resort: rehash PATH and look again
+    uv = shutil.which("uv")
+    if uv:
+        return uv
+    raise SystemExit(f"uv installation succeeded but binary not found at {candidate}")
+
+# -------- HPC: module loading --------
+
+def load_hpc_modules() -> tuple[str, dict[str, str], str | None]:
+    """
+    Purge active conda state, bootstrap Lmod, and load python + GDAL modules.
+    Returns: (python_abs_path, env_after_loads, gdal_lib_dir)
+
+    Confirmed gsapp module names: `python/3.12.9/anaconda` (no short-form alias
+    on this cluster), `rh9/gdal/3.11.0` (the (D) default).
+    """
+    info("Loading HPC modules (stripping conda, sourcing Lmod init)...")
+    # Exact module IDs known to exist on gsapp (verified via `module avail`).
+    # No short-form fallbacks (e.g. `python/3.12/anaconda`) — those don't exist.
+    python_modules = ["python/3.12.9/anaconda", "python/3.11.7/anaconda"]
+    gdal_modules = ["rh9/gdal/3.11.0", "rh9/gdal/3.5.3", "gdal/3.1.0", "gdal"]
+
+    py_load_attempts = " || ".join(f"module load {m}" for m in python_modules)
+    gdal_load_attempts = " || ".join(f"module load {m}" for m in gdal_modules)
+
+    # Build env-capture regex programmatically so the grep is readable.
+    capture_prefixes = (
+        "PATH", "LD_LIBRARY_PATH", "PYTHONPATH",
+        "LOADEDMODULES", "_LMFILES_", "MODULEPATH", "LMOD_",
+        "GDAL_", "PROJ_", "GS_LIB", "GEOTIFF_", "CPL_", "OGR_",
+    )
+    capture_regex = "^(" + "|".join(capture_prefixes) + ")"
+
+    script = textwrap.dedent(f"""
+        set -e
+
+        # 1. Strip conda from PATH and env — system-wide /etc/profile.d/conda.sh
+        # on gsapp auto-activates (base) on every login. We want a clean slate.
+        PATH=$(echo "$PATH" | tr ':' '\\n' \\
+            | grep -viE '(miniconda|anaconda|/conda/|conda3)' \\
+            | paste -sd: -)
+        export PATH
+        unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_SHLVL CONDA_PYTHON_EXE \\
+              CONDA_EXE CONDA_PROMPT_MODIFIER _CE_CONDA _CE_M PYTHONHOME
+
+        # 2. Bootstrap `module` (non-login shell doesn't auto-source this).
+        if ! command -v module >/dev/null 2>&1; then
+            for init in /etc/profile.d/modules.sh \\
+                        /usr/share/lmod/lmod/init/bash \\
+                        /apps/lmod/lmod/init/bash; do
+                [ -r "$init" ] && . "$init" && break
+            done
+        fi
+        if ! command -v module >/dev/null 2>&1; then
+            echo "MODULE_BOOTSTRAP_FAILED" >&2
+            exit 1
+        fi
+
+        # 3. Purge and load modules.
+        module purge 2>/dev/null || true
+        ( {py_load_attempts} ) 2>/dev/null || {{ echo "PY_LOAD_FAILED" >&2; exit 1; }}
+        ( {gdal_load_attempts} ) 2>/dev/null || echo "GDAL_LOAD_FAILED" >&2
+
+        # 4. Find the loaded python — absolute path, so the parent process
+        # doesn't rely on PATH ordering.
+        for cmd in python3.12 python3.11 python3; do
+            if command -v "$cmd" >/dev/null 2>&1; then
+                PY_ABS=$(command -v "$cmd")
+                break
+            fi
+        done
+        echo "PYTHON_CMD=$PY_ABS"
+
+        # 5. Capture libgdal location from gdal-config so we can RPATH-link.
+        if command -v gdal-config >/dev/null 2>&1; then
+            GDAL_LIBS=$(gdal-config --libs 2>/dev/null || true)
+            GDAL_LIB_DIR=$(echo "$GDAL_LIBS" | grep -oE '\\-L[^ ]+' | head -1 | sed 's/^-L//')
+            echo "GDAL_LIB_DIR=$GDAL_LIB_DIR"
+        fi
+
+        # 6. Dump relevant env vars so Python inherits the post-load state.
+        env | grep -E '{capture_regex}' \\
+            | while IFS= read -r line; do echo "ENV:$line"; done
+    """)
+
+    result = run_bash(script, capture=True, check=True)
+
+    python_cmd = "python3"
+    gdal_lib_dir: str | None = None
+    new_env = dict(os.environ)
+    # Defense-in-depth: drop any conda vars from the parent env too, in case
+    # the user ran `python install.py` with `(base)` still active.
+    for k in list(new_env):
+        if k.startswith("CONDA_") or k in ("_CE_CONDA", "_CE_M", "PYTHONHOME"):
+            new_env.pop(k, None)
+
+    for line in (result.stdout or "").splitlines():
+        if line.startswith("PYTHON_CMD="):
+            python_cmd = line.split("=", 1)[1].strip() or python_cmd
+        elif line.startswith("GDAL_LIB_DIR="):
+            val = line.split("=", 1)[1].strip()
+            gdal_lib_dir = val or None
+        elif line.startswith("ENV:"):
+            kv = line[4:]
+            if "=" in kv:
+                k, v = kv.split("=", 1)
+                new_env[k] = v
+
+    ok(f"HPC python: {python_cmd}")
+    if gdal_lib_dir:
+        ok(f"GDAL lib dir: {gdal_lib_dir}")
+    else:
+        warn("gdal-config not found; pip will use whatever libgdal it can find")
+    return python_cmd, new_env, gdal_lib_dir
+
+# -------- Non-HPC: Python 3.11 resolution --------
+
+def resolve_python_311(platform: str, uv: str) -> str:
+    """
+    Find or install Python 3.11. Returns either a name uv accepts (`3.11`) or an
+    absolute path. We always defer to `uv venv --python 3.11`, which itself
+    discovers system 3.11 or downloads a standalone build if needed.
+    """
+    candidates = ["python3.11", "py -3.11"] if platform != "windows" else ["py -3.11", "python3.11"]
+    for c in candidates:
+        # `py -3.11` is a launcher invocation; test with --version
+        try:
+            r = subprocess.run(c.split(), capture_output=True, text=True, timeout=5)
+            if r.returncode == 0 and "3.11" in (r.stdout + r.stderr):
+                ok(f"Found system Python 3.11: {c}")
+                return "3.11"  # let uv resolve it; it discovers system 3.11s
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+
+    info("System Python 3.11 not found; uv will download a standalone build")
+    # `uv python install` is idempotent
+    run([uv, "python", "install", "3.11"])
+    return "3.11"
+
+# -------- Windows: Gohlke wheels --------
+# Mirrors geocif/pyproject.toml [tool.uv.sources]. tool.uv.sources is honored
+# only when uv operates on the geocif project itself (editable/uv sync). When
+# installing geocif from PyPI, uv ignores those overrides and tries to build
+# from sdist, which fails for GDAL on Windows. So we pre-install the wheels.
+WINDOWS_WHEELS = [
+    "https://github.com/cgohlke/geospatial-wheels/releases/download/v2025.3.30/gdal-3.10.2-cp311-cp311-win_amd64.whl",
+    "https://github.com/cgohlke/geospatial-wheels/releases/download/v2025.3.30/rasterio-1.4.3-cp311-cp311-win_amd64.whl",
+    "https://github.com/cgohlke/geospatial-wheels/releases/download/v2025.3.30/shapely-2.0.7-cp311-cp311-win_amd64.whl",
+    "https://github.com/cgohlke/geospatial-wheels/releases/download/v2025.3.30/pyproj-3.7.1-cp311-cp311-win_amd64.whl",
+    "https://github.com/cgohlke/geospatial-wheels/releases/download/v2025.3.30/rtree-1.4.0-cp311-cp311-win_amd64.whl",
+    "https://github.com/cgohlke/geospatial-wheels/releases/download/v2025.3.30/fiona-1.10.1-cp311-cp311-win_amd64.whl",
+]
+
+# -------- Venv + install --------
+
+def create_venv(uv: str, venv_dir: pathlib.Path, python_spec: str, env: dict | None = None) -> None:
+    info(f"Creating venv at {venv_dir} (python={python_spec})")
+    run([uv, "venv", str(venv_dir), "--python", python_spec], env=env)
+
+def venv_python(venv_dir: pathlib.Path, platform: str) -> pathlib.Path:
+    if platform == "windows":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+def install_geocif(
+    uv: str,
+    venv_dir: pathlib.Path,
+    platform: str,
+    editable_geocif: str | None,
+    editable_geoprepare: str | None,
+    gdal_lib_dir: str | None,
+    base_env: dict | None,
+) -> None:
+    env = dict(base_env or os.environ)
+    env["VIRTUAL_ENV"] = str(venv_dir)
+    env["UV_PROJECT_ENVIRONMENT"] = str(venv_dir)
+    env.pop("PYTHONPATH", None)
+    env["PYTHONNOUSERSITE"] = "1"
+    # Defense-in-depth: ensure no conda vars leak into pip's build environment.
+    for k in list(env):
+        if k.startswith("CONDA_") or k in ("_CE_CONDA", "_CE_M", "PYTHONHOME"):
+            env.pop(k, None)
+
+    # Windows-only: pre-install Gohlke wheels because uv ignores geocif's
+    # [tool.uv.sources] when geocif is a PyPI install (not the active project).
+    # Without this, uv tries to build gdal==3.10.2 from sdist and fails.
+    if platform == "windows":
+        info("Pre-installing Gohlke geospatial wheels (Windows cp311)...")
+        run([uv, "pip", "install", *WINDOWS_WHEELS], env=env)
+
+    # HPC-only: force-build GDAL Python bindings against the module's libgdal.
+    # A PyPI manylinux wheel bundles its own libgdal that can ABI-mismatch the
+    # module's, causing "undefined symbol" at `from osgeo import gdal`. We
+    # pre-install GDAL with source-build + RPATH-baking BEFORE `uv pip install
+    # geocif` — uv then sees gdal==3.11.0 satisfied and skips the wheel.
+    # LDFLAGS is scoped to just this install (separate `gdal_env`) so it doesn't
+    # bake the GDAL lib dir into unrelated packages' .so files.
+    if platform == "umd_hpc" and gdal_lib_dir:
+        info("Pre-installing GDAL build deps (setuptools, wheel, numpy, cython)")
+        run([uv, "pip", "install",
+             "setuptools<81", "wheel", "numpy<2.5", "cython"], env=env)
+
+        gdal_env = dict(env)
+        gdal_env["LD_LIBRARY_PATH"] = (
+            f"{gdal_lib_dir}:{env.get('LD_LIBRARY_PATH', '')}"
+        )
+        gdal_env["LDFLAGS"] = f"-L{gdal_lib_dir} -Wl,-rpath,{gdal_lib_dir}"
+        info(f"Building GDAL==3.11.0 from source against module libgdal at {gdal_lib_dir}")
+        run([uv, "pip", "install",
+             "--no-binary", "gdal", "--no-build-isolation",
+             "gdal==3.11.0"], env=gdal_env)
+
+    # Install geoprepare first if editable, so geocif's pin resolves to it
+    if editable_geoprepare:
+        info(f"Installing geoprepare (editable) from {editable_geoprepare}")
+        run([uv, "pip", "install", "-e", editable_geoprepare], env=env)
+
+    if editable_geocif:
+        info(f"Installing geocif (editable) from {editable_geocif}")
+        run([uv, "pip", "install", "-e", editable_geocif], env=env)
+    else:
+        info("Installing geocif from PyPI (pulls geoprepare transitively)")
+        run([uv, "pip", "install", "geocif"], env=env)
+
+    # Supplemental deps: needed by geocif's production import chain but missing
+    # from older PyPI-published geocif metadata (added to pyproject in 0.4.656+).
+    # Idempotent — becomes a no-op once the env already has these.
+    # TODO: remove once we can require geocif >= 0.4.656 from PyPI.
+    info("Ensuring supplemental deps (cartopy, Rbeast, etc.)")
+    run([uv, "pip", "install",
+         "cartopy>=0.22",
+         "Rbeast>=0.1.20",
+         "scikit-learn>=1.4",
+         "bottleneck>=1.3",
+         "cachetools>=5.0",
+         "geopy>=2.0",
+         "scikit-image>=0.21",
+        ], env=env)
+
+    # pygeoutil is git-only (not on PyPI) and is imported by geocif/viz/plot.py.
+    # PyPI forbids URL deps in published packages, so geocif's pyproject can't
+    # declare it directly — the installer pulls it explicitly.
+    info("Installing pygeoutil from git (tracks main)")
+    run([uv, "pip", "install", "git+https://github.com/ritviksahajpal/pygeoutil.git"], env=env)
+
+# -------- Activation scripts --------
+
+ACTIVATE_SH_LOCAL = """\
+#!/usr/bin/env bash
+# Activation script for geo-stack (local Linux/macOS)
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+unset PYTHONPATH
+export PYTHONNOUSERSITE=1
+source "$HERE/.venv/bin/activate"
+echo "[ok] geo-stack activated: $(python --version 2>&1)"
+"""
+
+ACTIVATE_SH_HPC_TEMPLATE = """\
+#!/usr/bin/env bash
+# Activation script for geo-stack (UMD HPC) — minimizes conda, uses modules + uv
+HERE="$(cd "$(dirname "${{BASH_SOURCE[0]}}")" && pwd)"
+
+# Skip if already active.
+if [[ "$VIRTUAL_ENV" == *"geo-stack"* ]]; then
+    echo "geo-stack is already active"
+    return 0 2>/dev/null || exit 0
+fi
+
+# Strip conda dirs from PATH and unset conda vars. gsapp auto-activates (base)
+# via /etc/profile.d/conda.sh on every login — we don't fight that with
+# `conda deactivate` (which depends on conda being callable and may misbehave);
+# we just remove conda's PATH entries and clear its env vars.
+PATH=$(echo "$PATH" | tr ':' '\\n' \\
+    | grep -viE '(miniconda|anaconda|/conda/|conda3)' \\
+    | paste -sd: -)
+export PATH
+unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_SHLVL CONDA_PYTHON_EXE \\
+      CONDA_EXE CONDA_PROMPT_MODIFIER _CE_CONDA _CE_M PYTHONHOME
+
+# uv must be on PATH (installer adds $HOME/.local/bin to ~/.bashrc).
+export PATH="$HOME/.local/bin:$PATH"
+
+# Bootstrap `module` if not already a function (non-login shells skip
+# /etc/profile.d/modules.sh).
+if ! command -v module >/dev/null 2>&1; then
+    for init in /etc/profile.d/modules.sh \\
+                /usr/share/lmod/lmod/init/bash \\
+                /apps/lmod/lmod/init/bash; do
+        [ -r "$init" ] && . "$init" && break
+    done
+fi
+
+if command -v module >/dev/null 2>&1; then
+    module purge 2>/dev/null || true
+    {module_loads}
+else
+    echo "[!]  module command unavailable -- GDAL imports may fail"
+fi
+
+# Ensure the GDAL module's libgdal is ahead of anything else on the loader path.
+GDAL_LIB="{gdal_lib}"
+if [[ -n "$GDAL_LIB" && -d "$GDAL_LIB" ]]; then
+    export LD_LIBRARY_PATH="${{GDAL_LIB}}:${{LD_LIBRARY_PATH:-}}"
+fi
+
+unset PYTHONPATH
+export PYTHONNOUSERSITE=1
+source "$HERE/.venv/bin/activate"
+
+echo "[ok] geo-stack activated: $(python --version 2>&1)"
+python -c "from osgeo import gdal" 2>/dev/null && echo "[ok] GDAL import OK" \\
+    || echo "[!]  GDAL import failed -- check module loading"
+"""
+
+ACTIVATE_PS1 = """\
+# Activation script for geo-stack (Windows PowerShell) — self-contained
+# Does NOT call uv-shipped activate scripts (which uv often skips creating).
+$Here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$VenvDir = Join-Path $Here ".venv"
+$ScriptsDir = Join-Path $VenvDir "Scripts"
+
+# Save originals so `deactivate` can restore them (only on first activation
+# of this shell, so re-activating doesn't double-decorate PATH/PROMPT).
+if (-not $script:_GeoOldPath)   { $script:_GeoOldPath   = $env:PATH }
+if (-not $script:_GeoOldPrompt) { $script:_GeoOldPrompt = (Get-Item function:prompt).ScriptBlock }
+
+$env:VIRTUAL_ENV = $VenvDir
+$env:PATH = "$ScriptsDir;$script:_GeoOldPath"
+$env:PYTHONNOUSERSITE = "1"
+Remove-Item Env:PYTHONPATH -ErrorAction SilentlyContinue
+
+function global:prompt { "(geo-stack) " + (& $script:_GeoOldPrompt) }
+
+function global:deactivate {
+    if ($script:_GeoOldPath) {
+        $env:PATH = $script:_GeoOldPath
+        $script:_GeoOldPath = $null
+    }
+    if ($script:_GeoOldPrompt) {
+        Set-Item function:global:prompt $script:_GeoOldPrompt
+        $script:_GeoOldPrompt = $null
+    }
+    Remove-Item Env:VIRTUAL_ENV -ErrorAction SilentlyContinue
+    Remove-Item Env:PYTHONNOUSERSITE -ErrorAction SilentlyContinue
+    Write-Host "[ok] geo-stack deactivated"
+}
+
+Write-Host "[ok] geo-stack activated: $(& "$ScriptsDir\\python.exe" --version 2>&1)"
+"""
+
+ACTIVATE_BAT = """\
+@echo off
+REM Activation script for geo-stack (Windows cmd.exe) — self-contained
+REM Does NOT call uv-shipped activate.bat (which uv often skips creating).
+set "HERE=%~dp0"
+set "VIRTUAL_ENV=%HERE%.venv"
+set "GEO_SCRIPTS=%VIRTUAL_ENV%\\Scripts"
+
+REM Save originals once so deactivate.bat can restore them.
+if not defined _GEO_OLD_PATH   set "_GEO_OLD_PATH=%PATH%"
+if not defined _GEO_OLD_PROMPT set "_GEO_OLD_PROMPT=%PROMPT%"
+
+REM Always rebuild PATH/PROMPT from saved originals so re-activation is idempotent.
+set "PATH=%GEO_SCRIPTS%;%_GEO_OLD_PATH%"
+if not defined PROMPT set "_GEO_OLD_PROMPT=$P$G"
+set "PROMPT=(geo-stack) %_GEO_OLD_PROMPT%"
+
+set "PYTHONNOUSERSITE=1"
+set "PYTHONPATH="
+
+echo [ok] geo-stack activated
+"%GEO_SCRIPTS%\\python.exe" --version
+"""
+
+DEACTIVATE_BAT = """\
+@echo off
+REM Deactivate geo-stack — restores PATH/PROMPT, unsets VIRTUAL_ENV.
+REM Use this instead of `deactivate` (which conda hijacks on Windows).
+
+if defined _GEO_OLD_PATH (
+    set "PATH=%_GEO_OLD_PATH%"
+    set "_GEO_OLD_PATH="
+)
+if defined _GEO_OLD_PROMPT (
+    set "PROMPT=%_GEO_OLD_PROMPT%"
+    set "_GEO_OLD_PROMPT="
+)
+set "VIRTUAL_ENV="
+set "PYTHONNOUSERSITE="
+set "GEO_SCRIPTS="
+echo [ok] geo-stack deactivated
+"""
+
+def write_activation(install_dir: pathlib.Path, platform: str, gdal_lib_dir: str | None) -> None:
+    if platform == "windows":
+        (install_dir / "activate.ps1").write_text(ACTIVATE_PS1)
+        (install_dir / "activate.bat").write_text(ACTIVATE_BAT)
+        (install_dir / "deactivate.bat").write_text(DEACTIVATE_BAT)
+        ok(f"Wrote activate.ps1, activate.bat, deactivate.bat in {install_dir}")
+        return
+
+    if platform == "umd_hpc":
+        # Confirmed exact module names on gsapp (no short-form aliases like
+        # `python/3.12/anaconda` exist; the only valid IDs are dotted versions).
+        module_loads = "\n    ".join([
+            'for m in python/3.12.9/anaconda python/3.11.7/anaconda; do module load "$m" 2>/dev/null && break; done',
+            'for m in rh9/gdal/3.11.0 rh9/gdal/3.5.3 gdal/3.1.0 gdal; do module load "$m" 2>/dev/null && break; done',
+        ])
+        body = ACTIVATE_SH_HPC_TEMPLATE.format(
+            module_loads=module_loads,
+            gdal_lib=gdal_lib_dir or "",
+        )
+        path = install_dir / "activate.sh"
+        path.write_text(body)
+        path.chmod(0o755)
+        ok(f"Wrote activate.sh (HPC) in {install_dir}")
+        return
+
+    # Generic Linux / macOS
+    path = install_dir / "activate.sh"
+    path.write_text(ACTIVATE_SH_LOCAL)
+    path.chmod(0o755)
+    ok(f"Wrote activate.sh (local) in {install_dir}")
+
+# -------- ~/.bashrc (HPC only, minimal) --------
+
+BASHRC_BEGIN = "# BEGIN geo-stack installer"
+BASHRC_END = "# END geo-stack installer"
+
+def write_bashrc_block(force: bool) -> None:
+    bashrc = pathlib.Path.home() / ".bashrc"
+    if not bashrc.exists() and not force:
+        return
+    existing = bashrc.read_text() if bashrc.exists() else ""
+    # Strip prior block (idempotent)
+    if BASHRC_BEGIN in existing:
+        lines = existing.splitlines(keepends=True)
+        out, skipping = [], False
+        for ln in lines:
+            if BASHRC_BEGIN in ln:
+                skipping = True
+                continue
+            if BASHRC_END in ln:
+                skipping = False
+                continue
+            if not skipping:
+                out.append(ln)
+        existing = "".join(out)
+    block = f'\n{BASHRC_BEGIN}\nexport PATH="$HOME/.local/bin:$PATH"\n{BASHRC_END}\n'
+    bashrc.write_text(existing + block)
+    ok(f"Updated {bashrc} (uv on PATH)")
+
+# -------- Verification --------
+
+def verify(venv_dir: pathlib.Path, platform: str, env: dict | None) -> None:
+    py = venv_python(venv_dir, platform)
+    info("Verifying installation...")
+    script = textwrap.dedent("""
+        import sys
+        failed = []
+        # Top-level imports (with version reporting)
+        for mod in ("numpy", "pandas", "osgeo.gdal", "rasterio", "geopandas",
+                    "geoprepare", "geocif"):
+            try:
+                parts = mod.split(".")
+                m = __import__(mod)
+                for p in parts[1:]:
+                    m = getattr(m, p)
+                v = getattr(m, "__version__", "?")
+                print(f"[ok] {mod} {v}")
+            except Exception as e:
+                print(f"[err] {mod}: {e}")
+                failed.append(mod)
+        # geocif submodules that pull in the bulk of production deps
+        # (cartopy via viz.plot, Rbeast via production_analysis, sklearn via geocif.geocif)
+        for mod in ("geocif.viz.plot", "geocif.yield_outlook",
+                    "geocif.production_analysis.beast_runner"):
+            try:
+                __import__(mod)
+                print(f"[ok] {mod}")
+            except Exception as e:
+                print(f"[err] {mod}: {e}")
+                failed.append(mod)
+        sys.exit(1 if failed else 0)
+    """)
+    result = subprocess.run([str(py), "-c", script], env=env)
+    if result.returncode != 0:
+        warn("Some packages failed to import (see above)")
+    else:
+        ok("All critical packages imported successfully")
+
+# -------- install_info.txt --------
+
+def write_install_info(install_dir: pathlib.Path, platform: str, python_spec: str,
+                       gdal_lib_dir: str | None) -> None:
+    lines = [
+        "geo-stack installation summary",
+        "=" * 40,
+        f"Platform: {platform}",
+        f"Install dir: {install_dir}",
+        f"Python: {python_spec}",
+        f"GDAL lib dir: {gdal_lib_dir or '(n/a)'}",
+        f"OS: {platform_mod.platform()}",
+        "",
+        "Activation:",
+    ]
+    if platform == "windows":
+        lines.append(f"  PowerShell:   . {install_dir / 'activate.ps1'}")
+        lines.append(f"  cmd.exe:      {install_dir / 'activate.bat'}")
+        lines.append("")
+        lines.append("Deactivation:")
+        lines.append(f"  cmd.exe:      {install_dir / 'deactivate.bat'}")
+        lines.append( "  PowerShell:   deactivate   (function set by activate.ps1)")
+        lines.append( "  NOTE: do NOT use plain 'deactivate' in cmd.exe — conda hijacks it.")
+    else:
+        lines.append(f"  source {install_dir / 'activate.sh'}")
+        lines.append("")
+        lines.append("Deactivation: deactivate")
+    lines += [
+        "",
+        "Day-to-day usage:",
+        "  - Activate the env each new shell (command above).",
+        "  - Add/upgrade packages: uv pip install [--upgrade] <pkg>",
+        "  - Upgrade geocif:       uv pip install --upgrade geocif",
+        "",
+        "Re-run install.py ONLY to rebuild from scratch (e.g. broken env,",
+        "switching Python version). It will prompt before deleting the venv.",
+    ]
+    (install_dir / "installation_info.txt").write_text("\n".join(lines) + "\n")
+
+# -------- Default install base --------
+
+def default_install_base(platform: str) -> pathlib.Path:
+    if platform == "umd_hpc":
+        gpfs_user = UMD_HPC_MARKER / os.environ.get("USER", "")
+        if gpfs_user.parent.exists():
+            return gpfs_user
+    if platform == "windows":
+        return pathlib.Path(os.environ.get("USERPROFILE", "C:\\")) / "geo-stack-env"
+    return pathlib.Path.home() / "geo-stack-env"
+
+# -------- CLI --------
+
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Cross-platform geocif/geoprepare installer.")
+    p.add_argument("--install-base", type=pathlib.Path, default=None,
+                   help="Parent dir for the geo-stack env (default per platform).")
+    p.add_argument("--editable", type=str, default=None,
+                   help="Install geocif as editable from this local path.")
+    p.add_argument("--editable-geoprepare", type=str, default=None,
+                   help="Install geoprepare as editable from this local path.")
+    p.add_argument("--platform", choices=["auto", "windows", "umd_hpc", "linux", "macos"],
+                   default="auto", help="Override platform detection.")
+    p.add_argument("--write-shell-rc", action="store_true",
+                   help="On non-HPC, write a uv-PATH line to ~/.bashrc.")
+    p.add_argument("--yes", "-y", action="store_true",
+                   help="Skip interactive confirmation.")
+    return p.parse_args()
+
+def main() -> None:
+    args = parse_args()
+
+    # Fail fast in non-interactive shells without --yes (e.g. SLURM batch jobs);
+    # the input() prompts would otherwise hang waiting on stdin forever.
+    if not args.yes and not sys.stdin.isatty():
+        raise SystemExit(
+            "Non-interactive shell detected (no TTY). Re-run with --yes."
+        )
+
+    platform = args.platform if args.platform != "auto" else detect_platform()
+    info(f"Detected platform: {platform}")
+
+    install_base = args.install_base or default_install_base(platform)
+    install_base = install_base.expanduser().resolve()
+    install_dir = install_base / "geo-stack"
+    venv_dir = install_dir / ".venv"
+
+    print("=" * 50)
+    print(f"Platform:     {platform}")
+    print(f"Install dir:  {install_dir}")
+    print(f"Editable geocif:     {args.editable or '(install from PyPI)'}")
+    print(f"Editable geoprepare: {args.editable_geoprepare or '(transitive)'}")
+    print("=" * 50)
+    if not args.yes:
+        reply = input("Continue? [y/N] ").strip().lower()
+        if reply not in ("y", "yes"):
+            raise SystemExit("Aborted.")
+
+    install_dir.mkdir(parents=True, exist_ok=True)
+    if venv_dir.exists():
+        # Partial venv (missing pyvenv.cfg) = no usable env — auto-rebuild
+        # without prompting. Catches the "antivirus ate Lib/" / Ctrl-C-mid-install
+        # case where the dir exists but the env is unusable.
+        if not (venv_dir / "pyvenv.cfg").exists():
+            warn(f"Partial venv at {venv_dir} (no pyvenv.cfg) — rebuilding")
+            shutil.rmtree(venv_dir)
+        else:
+            warn(f"Existing venv found at {venv_dir}")
+            if not args.yes:
+                reply = input("Delete and reinstall? [y/N] ").strip().lower()
+                if reply not in ("y", "yes"):
+                    raise SystemExit("Aborted (existing venv preserved).")
+            shutil.rmtree(venv_dir)
+
+    uv = ensure_uv(platform)
+
+    base_env: dict | None = None
+    gdal_lib_dir: str | None = None
+    if platform == "umd_hpc":
+        python_cmd, base_env, gdal_lib_dir = load_hpc_modules()
+        python_spec = python_cmd
+    else:
+        python_spec = resolve_python_311(platform, uv)
+
+    create_venv(uv, venv_dir, python_spec, env=base_env)
+
+    install_geocif(
+        uv, venv_dir, platform,
+        editable_geocif=args.editable,
+        editable_geoprepare=args.editable_geoprepare,
+        gdal_lib_dir=gdal_lib_dir,
+        base_env=base_env,
+    )
+
+    write_activation(install_dir, platform, gdal_lib_dir)
+    write_install_info(install_dir, platform, python_spec, gdal_lib_dir)
+
+    if platform == "umd_hpc":
+        write_bashrc_block(force=True)
+    elif args.write_shell_rc and platform in ("linux", "macos"):
+        write_bashrc_block(force=True)
+
+    verify(venv_dir, platform, base_env)
+
+    print()
+    print("=" * 50)
+    ok("Installation complete!")
+    print("=" * 50)
+    if platform == "windows":
+        print(f"Activate (PowerShell):   . '{install_dir / 'activate.ps1'}'")
+        print(f"Activate (cmd):          {install_dir / 'activate.bat'}")
+        print(f"Deactivate (cmd):        {install_dir / 'deactivate.bat'}")
+        print(f"Deactivate (PowerShell): deactivate   (function defined by activate.ps1)")
+    else:
+        print(f"Activate:   source {install_dir / 'activate.sh'}")
+        print(f"Deactivate: deactivate")
+    print()
+    print("Day-to-day usage:")
+    print("  - Activate the env each new shell (command above).")
+    print("  - Install/upgrade packages: uv pip install [--upgrade] <pkg>")
+    print()
+    print("You do NOT need to re-run install.py for normal use.")
+    print("Run it again only to rebuild the env from scratch")
+    print("(broken env, switching Python version, etc.).")
+    print()
+    print(f"Full notes: {install_dir / 'installation_info.txt'}")
+    print()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        err("Interrupted")
+        sys.exit(130)

@@ -5,6 +5,15 @@
 # HPC/Cluster Version with Module Support
 # FIXED: Proper UV PATH handling
 # ============================================
+#
+# DEPRECATED: Use install.py instead.
+#   python install.py [--install-base DIR] [--editable PATH]
+#
+# install.py works on Windows, UMD HPC, generic Linux, and macOS, and uses
+# geocif/pyproject.toml as the source of truth for dependencies. This bash
+# script is kept only as a fallback for HPC hosts where Python is not
+# available before the module system loads it.
+# ============================================
 
 set -e  # Exit on any error
 
