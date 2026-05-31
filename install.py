@@ -16,7 +16,7 @@ Stdlib-only; requires Python 3.8+ to bootstrap (uv handles the target Python).
 
 from __future__ import annotations
 
-__version__ = "0.4.4"
+__version__ = "0.4.5"
 
 import argparse
 import contextlib
@@ -552,24 +552,32 @@ def install_geocif(
     info("Installing pygeoutil from git (tracks main)")
     run([uv, "pip", "install", "git+https://github.com/ritviksahajpal/pygeoutil.git"], env=env)
 
-    # Strip CUDA/nvidia/triton packages. torch wheels for Linux pull these
-    # in transitively (~3GB), but geocif's import chain is CPU-only. The
-    # exclusion in geocif/pyproject.toml's `[tool.uv] override-dependencies`
-    # is honored ONLY when geocif is the active uv project — when installed
-    # from PyPI as a dependency, uv ignores it. So we uninstall here.
-    # torch itself stays installed (CPU code paths work without nvidia-*).
-    # check=False because many of these may not exist on Windows/macOS.
-    info("Removing CUDA/nvidia/triton packages (CPU-only setup)")
-    cuda_packages = [
-        "cuda-bindings", "cuda-pathfinder", "cuda-toolkit",
-        "nvidia-cublas", "nvidia-cuda-cupti", "nvidia-cuda-nvrtc",
-        "nvidia-cuda-runtime", "nvidia-cudnn-cu13", "nvidia-cufft",
-        "nvidia-cufile", "nvidia-curand", "nvidia-cusolver", "nvidia-cusparse",
-        "nvidia-cusparselt-cu13", "nvidia-ml-py", "nvidia-nccl-cu13",
-        "nvidia-nvjitlink", "nvidia-nvshmem-cu13", "nvidia-nvtx",
-        "triton",
-    ]
-    run([uv, "pip", "uninstall", *cuda_packages], env=env, check=False)
+    # Swap to CPU-only torch on Linux/HPC.
+    # PyPI's torch wheel for Linux x86_64 is the CUDA build — it hard-loads
+    # libcudart.so.13 via global ctypes.CDLL at import time, so simply
+    # uninstalling nvidia-* breaks `import torch`. We force-reinstall torch
+    # from pytorch.org's CPU index (no CUDA deps, no libcudart load), THEN
+    # the nvidia-*/cuda-*/triton packages are safely removable.
+    # --no-deps avoids touching sympy/networkx/etc. that are already there.
+    # torch.cuda.is_available() returns False after this — correct for any
+    # workload that doesn't need a GPU (gsapp head nodes have no GPU).
+    if platform in ("linux", "umd_hpc"):
+        info("Replacing torch with CPU-only build (drops ~3GB of CUDA deps)")
+        run([uv, "pip", "install", "torch",
+             "--index-url", "https://download.pytorch.org/whl/cpu",
+             "--force-reinstall", "--no-deps"], env=env)
+
+        info("Removing CUDA/nvidia/triton packages (no longer referenced)")
+        cuda_packages = [
+            "cuda-bindings", "cuda-pathfinder", "cuda-toolkit",
+            "nvidia-cublas", "nvidia-cuda-cupti", "nvidia-cuda-nvrtc",
+            "nvidia-cuda-runtime", "nvidia-cudnn-cu13", "nvidia-cufft",
+            "nvidia-cufile", "nvidia-curand", "nvidia-cusolver",
+            "nvidia-cusparse", "nvidia-cusparselt-cu13", "nvidia-ml-py",
+            "nvidia-nccl-cu13", "nvidia-nvjitlink", "nvidia-nvshmem-cu13",
+            "nvidia-nvtx", "triton",
+        ]
+        run([uv, "pip", "uninstall", *cuda_packages], env=env, check=False)
 
     # HPC ONLY: now that all other packages are installed, force-rebuild GDAL
     # from source with our RPATH-embedding LDFLAGS. This must come LAST because
