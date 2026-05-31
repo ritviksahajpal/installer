@@ -345,27 +345,18 @@ def install_geocif(
         info("Pre-installing Gohlke geospatial wheels (Windows cp311)...")
         run([uv, "pip", "install", *WINDOWS_WHEELS], env=env)
 
-    # HPC-only: force-build GDAL Python bindings against the module's libgdal.
-    # A PyPI manylinux wheel bundles its own libgdal that can ABI-mismatch the
-    # module's, causing "undefined symbol" at `from osgeo import gdal`. We
-    # pre-install GDAL with source-build + RPATH-baking BEFORE `uv pip install
-    # geocif` — uv then sees gdal==3.11.0 satisfied and skips the wheel.
-    # LDFLAGS is scoped to just this install (separate `gdal_env`) so it doesn't
-    # bake the GDAL lib dir into unrelated packages' .so files.
+    # HPC-only: prepare LDFLAGS env for the source-built GDAL (applied later,
+    # AFTER `uv pip install geocif`, because uv otherwise reinstalls gdal from
+    # a PyPI wheel during the geocif resolution step — even if our pre-built
+    # version is already in the venv. Scoping LDFLAGS to gdal_env keeps the
+    # RPATH out of other packages' .so files.
+    gdal_env = None
     if platform == "umd_hpc" and gdal_lib_dir:
-        info("Pre-installing GDAL build deps (setuptools, wheel, numpy, cython)")
-        run([uv, "pip", "install",
-             "setuptools<81", "wheel", "numpy<2.5", "cython"], env=env)
-
         gdal_env = dict(env)
         gdal_env["LD_LIBRARY_PATH"] = (
             f"{gdal_lib_dir}:{env.get('LD_LIBRARY_PATH', '')}"
         )
         gdal_env["LDFLAGS"] = f"-L{gdal_lib_dir} -Wl,-rpath,{gdal_lib_dir}"
-        info(f"Building GDAL==3.11.0 from source against module libgdal at {gdal_lib_dir}")
-        run([uv, "pip", "install",
-             "--no-binary", "gdal", "--no-build-isolation",
-             "gdal==3.11.0"], env=gdal_env)
 
     # Install geoprepare first if editable, so geocif's pin resolves to it
     if editable_geoprepare:
@@ -399,6 +390,40 @@ def install_geocif(
     # declare it directly — the installer pulls it explicitly.
     info("Installing pygeoutil from git (tracks main)")
     run([uv, "pip", "install", "git+https://github.com/ritviksahajpal/pygeoutil.git"], env=env)
+
+    # HPC ONLY: now that all other packages are installed, force-rebuild GDAL
+    # from source with our RPATH-embedding LDFLAGS. This must come LAST because
+    # `uv pip install geocif` re-resolves and may install gdal from a PyPI
+    # wheel (overwriting any earlier source build with one whose _gdal.so
+    # links against a different libgdal — symptom: missing _gdal.so or
+    # "No module named '_gdal'" on import).
+    # --force-reinstall --no-deps overwrites gdal without touching anything
+    # else; --no-binary gdal forces source build; --no-build-isolation uses the
+    # venv's setuptools/numpy/cython for ABI consistency.
+    if platform == "umd_hpc" and gdal_lib_dir and gdal_env is not None:
+        info("Installing GDAL build deps (setuptools, wheel, numpy, cython)")
+        run([uv, "pip", "install",
+             "setuptools<81", "wheel", "numpy<2.5", "cython"], env=env)
+        info(f"Final source build of GDAL==3.11.0 against module libgdal at {gdal_lib_dir} (overwrites any wheel uv installed)")
+        run([uv, "pip", "install",
+             "--no-binary", "gdal",
+             "--no-build-isolation",
+             "--force-reinstall", "--no-deps",
+             "gdal==3.11.0"], env=gdal_env)
+
+        # Sanity check: confirm _gdal*.so actually landed.
+        found_so = False
+        for pylib in (venv_dir / "lib").glob("python*"):
+            osgeo_dir = pylib / "site-packages" / "osgeo"
+            if not osgeo_dir.exists():
+                continue
+            so_files = list(osgeo_dir.glob("_gdal*.so"))
+            if so_files:
+                ok(f"GDAL C extension: {so_files[0].name}")
+                found_so = True
+                break
+        if not found_so:
+            warn("_gdal*.so NOT FOUND in venv site-packages — GDAL import will fail")
 
 # -------- Activation scripts --------
 
