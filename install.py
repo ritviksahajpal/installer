@@ -16,7 +16,7 @@ Stdlib-only; requires Python 3.8+ to bootstrap (uv handles the target Python).
 
 from __future__ import annotations
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 import argparse
 import contextlib
@@ -294,14 +294,6 @@ def load_hpc_modules() -> tuple[str, dict[str, str], str | None]:
     for k in list(new_env):
         if k.startswith("CONDA_") or k in ("_CE_CONDA", "_CE_M", "PYTHONHOME"):
             new_env.pop(k, None)
-    # PYTHONPATH from the HPC GDAL module points at its pre-built osgeo
-    # bindings. If we keep it in base_env, those bindings shadow the venv's
-    # properly-built osgeo at runtime (verify subprocess sees module's
-    # incomplete bindings → "No module named '_gdal'"). activate.sh already
-    # `unset PYTHONPATH`; we do the same here so subprocess runs see the
-    # same env.
-    new_env.pop("PYTHONPATH", None)
-    new_env["PYTHONNOUSERSITE"] = "1"
 
     for line in (result.stdout or "").splitlines():
         if line.startswith("PYTHON_CMD="):
@@ -313,7 +305,19 @@ def load_hpc_modules() -> tuple[str, dict[str, str], str | None]:
             kv = line[4:]
             if "=" in kv:
                 k, v = kv.split("=", 1)
+                # Skip PYTHONPATH — HPC GDAL module sets it to
+                # /apps/.../gdal/3.11.0/lib64/python3.9/site-packages, which
+                # contains osgeo built for cp39. Letting it into our env causes
+                # cp312 venv to find osgeo from that dir first and fail with
+                # "No module named '_gdal'" (cp39 .so won't load in cp312).
+                # activate.sh also unsets PYTHONPATH for the same reason.
+                if k == "PYTHONPATH":
+                    continue
                 new_env[k] = v
+    # Belt-and-suspenders: explicit removal in case it was set on
+    # os.environ at script entry.
+    new_env.pop("PYTHONPATH", None)
+    new_env["PYTHONNOUSERSITE"] = "1"
 
     ok(f"HPC python: {python_cmd}")
     if gdal_lib_dir:
@@ -408,7 +412,17 @@ def install_geocif(
         gdal_env["LD_LIBRARY_PATH"] = (
             f"{gdal_lib_dir}:{env.get('LD_LIBRARY_PATH', '')}"
         )
-        gdal_env["LDFLAGS"] = f"-L{gdal_lib_dir} -Wl,-rpath,{gdal_lib_dir}"
+        # --enable-new-dtags emits DT_RUNPATH instead of DT_RPATH. Under
+        # RUNPATH, LD_LIBRARY_PATH is checked BEFORE the embedded path —
+        # this is what we want, because GDAL's setup.py may prepend
+        # /apps/python/3.12.9/anaconda3/lib (which has an older libgdal)
+        # to RPATH. With RUNPATH semantics, our LD_LIBRARY_PATH
+        # (module's libgdal 3.11.0 first) wins.
+        gdal_env["LDFLAGS"] = (
+            f"-L{gdal_lib_dir} "
+            f"-Wl,-rpath,{gdal_lib_dir} "
+            f"-Wl,--enable-new-dtags"
+        )
 
     # Install geoprepare first if editable, so geocif's pin resolves to it
     if editable_geoprepare:
@@ -788,7 +802,10 @@ def verify(venv_dir: pathlib.Path, platform: str, env: dict | None) -> None:
                 failed.append(mod)
         sys.exit(1 if failed else 0)
     """)
-    result = subprocess.run([str(py), "-c", script], env=env)
+    # Use the run() helper so its output is captured + relayed through
+    # the (potentially log-teed) sys.stdout. Direct subprocess.run inherits
+    # fd 1/2 and bypasses Python-level logging.
+    result = run([str(py), "-c", script], env=env, check=False)
     if result.returncode != 0:
         warn("Some packages failed to import (see above)")
     else:
