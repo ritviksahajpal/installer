@@ -16,7 +16,7 @@ Stdlib-only; requires Python 3.8+ to bootstrap (uv handles the target Python).
 
 from __future__ import annotations
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 import argparse
 import contextlib
@@ -536,7 +536,7 @@ def install_geocif(
             if main_gdal_so:
                 ok(f"GDAL main extension: {main_gdal_so[0].name}")
                 gdal_so_found = True
-                # Confirm RPATH was baked into the .so
+                # Confirm RPATH/RUNPATH was baked into the .so
                 if shutil.which("readelf"):
                     rp = subprocess.run(
                         ["readelf", "-d", str(main_gdal_so[0])],
@@ -551,6 +551,23 @@ def install_geocif(
                             info(f"  {ln.strip()}")
                     else:
                         warn("  No RPATH/RUNPATH in _gdal.so — runtime may fail to find libgdal")
+                # Run ldd to show whether the loader actually finds libgdal
+                # (using the same env as the verify subprocess will).
+                if shutil.which("ldd"):
+                    ldd_env = dict(env)
+                    if gdal_lib_dir:
+                        ldd_env["LD_LIBRARY_PATH"] = (
+                            f"{gdal_lib_dir}:{env.get('LD_LIBRARY_PATH', '')}"
+                        )
+                    ldd_res = subprocess.run(
+                        ["ldd", str(main_gdal_so[0])],
+                        capture_output=True, text=True, check=False,
+                        env=ldd_env,
+                    )
+                    info("  ldd _gdal.so (libgdal resolution):")
+                    for ln in (ldd_res.stdout or "").splitlines():
+                        if "libgdal" in ln or "not found" in ln:
+                            info(f"    {ln.strip()}")
             else:
                 other_sos = sorted(p.name for p in osgeo_dir.glob("_*.so"))
                 err("_gdal.cpython-*.so NOT FOUND in venv site-packages.")
@@ -776,6 +793,7 @@ def verify(venv_dir: pathlib.Path, platform: str, env: dict | None) -> None:
     info("Verifying installation...")
     script = textwrap.dedent("""
         import sys
+        import traceback
         failed = []
         # Top-level imports (with version reporting)
         for mod in ("numpy", "pandas", "osgeo.gdal", "rasterio", "geopandas",
@@ -788,8 +806,39 @@ def verify(venv_dir: pathlib.Path, platform: str, env: dict | None) -> None:
                 v = getattr(m, "__version__", "?")
                 print(f"[ok] {mod} {v}")
             except Exception as e:
-                print(f"[err] {mod}: {e}")
+                print(f"[err] {mod}: {type(e).__name__}: {e}")
                 failed.append(mod)
+                # For osgeo specifically: dlopen the .so directly to surface
+                # the real loader error (Python sometimes masks it as
+                # "ModuleNotFoundError: No module named '_gdal'").
+                if mod == "osgeo.gdal":
+                    import os, glob, ctypes
+                    print("    [diag] full traceback:")
+                    traceback.print_exc()
+                    so_glob = os.path.join(
+                        sys.prefix, "lib",
+                        f"python{sys.version_info.major}.{sys.version_info.minor}",
+                        "site-packages", "osgeo", "_gdal*.so",
+                    )
+                    sos = sorted(glob.glob(so_glob))
+                    print(f"    [diag] osgeo/_gdal*.so files found: {len(sos)}")
+                    for so in sos:
+                        print(f"      {os.path.basename(so)} ({os.path.getsize(so)} bytes)")
+                    # Try ctypes.CDLL to get the real OSError dlopen message
+                    main_so = next(
+                        (s for s in sos if "_gdal.cpython" in s or s.endswith("/_gdal.so")),
+                        None,
+                    )
+                    if main_so:
+                        print(f"    [diag] ctypes.CDLL({main_so!r}):")
+                        try:
+                            ctypes.CDLL(main_so)
+                            print("      LOAD OK (then why did import fail?)")
+                        except OSError as dlerr:
+                            print(f"      OSError: {dlerr}")
+                    print(f"    [diag] LD_LIBRARY_PATH = {os.environ.get('LD_LIBRARY_PATH', '<unset>')}")
+                    print(f"    [diag] PYTHONPATH = {os.environ.get('PYTHONPATH', '<unset>')}")
+                    print(f"    [diag] sys.path[:6] = {sys.path[:6]}")
         # geocif submodules that pull in the bulk of production deps
         # (cartopy via viz.plot, Rbeast via production_analysis, sklearn via geocif.geocif)
         for mod in ("geocif.viz.plot", "geocif.yield_outlook",
@@ -798,7 +847,7 @@ def verify(venv_dir: pathlib.Path, platform: str, env: dict | None) -> None:
                 __import__(mod)
                 print(f"[ok] {mod}")
             except Exception as e:
-                print(f"[err] {mod}: {e}")
+                print(f"[err] {mod}: {type(e).__name__}: {e}")
                 failed.append(mod)
         sys.exit(1 if failed else 0)
     """)
