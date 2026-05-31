@@ -64,6 +64,9 @@ _C = {
     "red":    "\033[0;31m" if _USE_COLOR else "",
     "green":  "\033[0;32m" if _USE_COLOR else "",
     "yellow": "\033[1;33m" if _USE_COLOR else "",
+    "cyan":   "\033[0;36m" if _USE_COLOR else "",
+    "bold":   "\033[1m"    if _USE_COLOR else "",
+    "bgreen": "\033[1;32m" if _USE_COLOR else "",
     "reset":  "\033[0m"    if _USE_COLOR else "",
 }
 
@@ -71,6 +74,60 @@ def ok(msg: str) -> None:     print(f"{_C['green']}[ok]{_C['reset']}  {msg}")
 def err(msg: str) -> None:    print(f"{_C['red']}[err]{_C['reset']} {msg}", file=sys.stderr)
 def warn(msg: str) -> None:   print(f"{_C['yellow']}[!]{_C['reset']}   {msg}")
 def info(msg: str) -> None:   print(f"->    {msg}")
+
+def _print_success_banner(install_dir: pathlib.Path, platform: str) -> None:
+    """High-visibility end-of-install banner. Drawn green & bold so it stands out
+    in a long install log. Falls back to plain text when colors are disabled."""
+    G  = _C["bgreen"]   # bold green
+    B  = _C["bold"]
+    C  = _C["cyan"]
+    R  = _C["reset"]
+    bar = "=" * 72
+
+    if platform == "windows":
+        activate_lines = [
+            f"  PowerShell:   {C}. '{install_dir / 'activate.ps1'}'{R}",
+            f"  cmd.exe:      {C}{install_dir / 'activate.bat'}{R}",
+        ]
+        deactivate_note = (
+            f"  cmd.exe:      {install_dir / 'deactivate.bat'}\n"
+            f"  PowerShell:   deactivate   (function defined by activate.ps1)"
+        )
+    else:
+        activate_lines = [f"  {C}source {install_dir / 'activate.sh'}{R}"]
+        deactivate_note = "  deactivate"
+
+    print()
+    print(f"{G}{bar}{R}")
+    print(f"{G}{bar}{R}")
+    print(f"{G}=={R}{' ' * 68}{G}=={R}")
+    print(f"{G}=={R}   {B}INSTALLATION COMPLETE{R}" + " " * 44 + f"{G}=={R}")
+    print(f"{G}=={R}{' ' * 68}{G}=={R}")
+    print(f"{G}{bar}{R}")
+    print(f"{G}{bar}{R}")
+    print()
+    print(f"{B}>> ACTIVATE THE ENV (run this in every new shell):{R}")
+    print()
+    for line in activate_lines:
+        print(line)
+    print()
+    print(f"{B}>> INSTALL ADDITIONAL PYTHON LIBRARIES (after activating):{R}")
+    print()
+    print(f"  {C}uv pip install <package>{R}             # add a new package")
+    print(f"  {C}uv pip install --upgrade <package>{R}   # upgrade an existing one")
+    print()
+    print(f"{B}>> DEACTIVATE WHEN DONE:{R}")
+    print()
+    print(deactivate_note)
+    print()
+    print("-" * 72)
+    print("You do NOT need to re-run install.py for normal use.")
+    print("Re-run it only to rebuild the env from scratch (broken env, switching")
+    print("Python version, etc.).")
+    print()
+    print(f"Full notes: {install_dir / 'installation_info.txt'}")
+    print(f"{G}{bar}{R}")
+    print()
 
 # -------- Platform detection --------
 
@@ -1130,29 +1187,7 @@ def main() -> None:
 
     verify(venv_dir, platform, base_env)
 
-    print()
-    print("=" * 50)
-    ok("Installation complete!")
-    print("=" * 50)
-    if platform == "windows":
-        print(f"Activate (PowerShell):   . '{install_dir / 'activate.ps1'}'")
-        print(f"Activate (cmd):          {install_dir / 'activate.bat'}")
-        print(f"Deactivate (cmd):        {install_dir / 'deactivate.bat'}")
-        print(f"Deactivate (PowerShell): deactivate   (function defined by activate.ps1)")
-    else:
-        print(f"Activate:   source {install_dir / 'activate.sh'}")
-        print(f"Deactivate: deactivate")
-    print()
-    print("Day-to-day usage:")
-    print("  - Activate the env each new shell (command above).")
-    print("  - Install/upgrade packages: uv pip install [--upgrade] <pkg>")
-    print()
-    print("You do NOT need to re-run install.py for normal use.")
-    print("Run it again only to rebuild the env from scratch")
-    print("(broken env, switching Python version, etc.).")
-    print()
-    print(f"Full notes: {install_dir / 'installation_info.txt'}")
-    print()
+    _print_success_banner(install_dir, platform)
 
 if __name__ == "__main__":
     try:

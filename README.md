@@ -17,6 +17,8 @@ Supported platforms:
 
 ## Run on UMD HPC (gsapp)
 
+### 1. First-time install
+
 ```bash
 ssh gsapp                                       # login
 cd /gpfs/data1/cmongp1/$USER                    # or your project area
@@ -25,12 +27,22 @@ cd installer
 python install.py --yes
 ```
 
-That's it — first run takes ~3–5 minutes (downloads uv + Python 3.12.9 module + ~150 PyPI packages + a one-time source build of GDAL bindings).
+> First run takes ~3–5 minutes (downloads uv + Python 3.12.9 module + ~150 PyPI packages + a one-time source build of GDAL bindings).
 
-When it's done, activate in any new shell:
+### 2. Activate the env (run in every new shell)
+
 ```bash
 source /gpfs/data1/cmongp1/$USER/geo-stack/geo-stack/activate.sh
 ```
+
+### 3. Install additional Python libraries (after activating)
+
+```bash
+uv pip install <package>                # add a new package
+uv pip install --upgrade <package>      # upgrade an existing one
+```
+
+---
 
 To **update** the installer later (without rebuilding the venv):
 ```bash
@@ -47,13 +59,16 @@ python install.py --yes        # auto-deletes the old venv and rebuilds
 
 ## Run on Windows (local)
 
+### 1. First-time install
+
 ```powershell
 git clone https://github.com/ritviksahajpal/installer.git
 cd installer
 python install.py --yes
 ```
 
-After it finishes:
+### 2. Activate the env (run in every new shell)
+
 ```powershell
 # PowerShell
 . C:\Users\<you>\geo-stack-env\geo-stack\activate.ps1
@@ -62,11 +77,20 @@ After it finishes:
 C:\Users\<you>\geo-stack-env\geo-stack\activate.bat
 ```
 
-**Deactivate** with `deactivate` (PowerShell — a function defined by activate.ps1) or the `deactivate.bat` script in the env dir (cmd.exe — do **not** use plain `deactivate` in cmd; conda hijacks it).
+### 3. Install additional Python libraries (after activating)
+
+```powershell
+uv pip install <package>                # add a new package
+uv pip install --upgrade <package>      # upgrade an existing one
+```
+
+> **Deactivate** with `deactivate` (PowerShell — a function defined by activate.ps1) or the `deactivate.bat` script in the env dir (cmd.exe — do **not** use plain `deactivate` in cmd; conda hijacks it).
 
 ---
 
 ## Run on generic Linux / macOS
+
+### 1. First-time install
 
 ```bash
 git clone https://github.com/ritviksahajpal/installer.git
@@ -74,12 +98,20 @@ cd installer
 python install.py --yes
 ```
 
-Activate:
+### 2. Activate the env (run in every new shell)
+
 ```bash
 source ~/geo-stack-env/geo-stack/activate.sh
 ```
 
-If you don't have Python 3.11 on PATH, uv will download a standalone build during install.
+### 3. Install additional Python libraries (after activating)
+
+```bash
+uv pip install <package>                # add a new package
+uv pip install --upgrade <package>      # upgrade an existing one
+```
+
+> If you don't have Python 3.11 on PATH, uv will download a standalone build during install.
 
 ---
 
@@ -206,14 +238,10 @@ The installer's `Continue? [y/N]` prompt would hang. Pass `--yes` to skip all pr
 
 ## Updating packages later
 
-After install, activate the env and use `uv pip`:
+See the "Install additional Python libraries" snippet in your platform's section above for the day-to-day `uv pip install` workflow. To upgrade the full stack:
 
 ```bash
-# Update a single package
-uv pip install --upgrade geocif
-
-# Update everything (geocif + transitives)
-uv pip install --upgrade --reinstall geocif
+uv pip install --upgrade --reinstall geocif      # geocif + all transitives
 ```
 
 You only need to re-run `install.py` if you want to rebuild from scratch (e.g., switching Python versions, recovering from a broken env).
