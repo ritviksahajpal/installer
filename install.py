@@ -744,6 +744,21 @@ def main() -> None:
             raise SystemExit("Aborted.")
 
     install_dir.mkdir(parents=True, exist_ok=True)
+
+    # HPC: redirect uv/pip caches to GPFS. Home dirs on gsapp have a ~10GB
+    # quota; pyarrow alone is ~100MB extracted and uv pulls 150+ packages.
+    # Default ~/.cache/uv would fill the quota fast. Also: cache on the same
+    # filesystem as the venv enables hardlinks (no "Failed to hardlink"
+    # warnings, faster installs).
+    if platform == "umd_hpc":
+        uv_cache = install_dir / ".uv-cache"
+        pip_cache = install_dir / ".pip-cache"
+        uv_cache.mkdir(parents=True, exist_ok=True)
+        pip_cache.mkdir(parents=True, exist_ok=True)
+        os.environ["UV_CACHE_DIR"] = str(uv_cache)
+        os.environ["PIP_CACHE_DIR"] = str(pip_cache)
+        info(f"uv cache: {uv_cache}")
+
     if venv_dir.exists():
         # Partial venv (missing pyvenv.cfg) = no usable env — auto-rebuild
         # without prompting. Catches the "antivirus ate Lib/" / Ctrl-C-mid-install
