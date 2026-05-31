@@ -370,19 +370,34 @@ def install_geocif(
         info("Installing geocif from PyPI (pulls geoprepare transitively)")
         run([uv, "pip", "install", "geocif"], env=env)
 
-    # Supplemental deps: needed by geocif's production import chain but missing
-    # from older PyPI-published geocif metadata (added to pyproject in 0.4.656+).
-    # Idempotent — becomes a no-op once the env already has these.
-    # TODO: remove once we can require geocif >= 0.4.656 from PyPI.
-    info("Ensuring supplemental deps (cartopy, Rbeast, etc.)")
+    # Supplemental deps: belt-and-suspenders fallback for packages needed by
+    # geocif's production import chain but possibly missing from the PyPI-
+    # published geocif metadata. Idempotent — becomes a no-op once everything
+    # is in the env. Mirrors the latest geocif/pyproject.toml core deps.
+    # TODO: remove once the matching geocif release is on PyPI.
+    info("Ensuring supplemental deps (core, spatial, ML pipeline)")
     run([uv, "pip", "install",
-         "cartopy>=0.22",
-         "Rbeast>=0.1.20",
-         "scikit-learn>=1.4",
-         "bottleneck>=1.3",
-         "cachetools>=5.0",
-         "geopy>=2.0",
+         # Original belt-and-suspenders set
+         "cartopy>=0.22", "Rbeast>=0.1.20", "scikit-learn>=1.4",
+         "bottleneck>=1.3", "cachetools>=5.0", "geopy>=2.0",
          "scikit-image>=0.21",
+         # Core production imports (viz/utils/feature_engineering)
+         "mapclassify>=2.5", "pymannkendall>=1.4", "pangres>=4.0",
+         "kneed>=0.8", "lifelines>=0.27",
+         # Spatial production (production_analysis/beast_spatial.py)
+         "esda>=2.5", "libpysal>=4.10",
+         # ML pipeline alternative model backends (ml/trainers.py)
+         "crepes>=0.6", "cubist>=0.0.20", "mapie>=0.8", "merf>=1.0",
+         "ngboost>=0.5", "tabpfn-extensions>=0.0.1", "treeple>=0.10",
+         "ydf>=0.6",
+         # ML feature selection (ml/feature_selection.py)
+         "BorutaShap>=1.0", "arfs>=2.0", "fasttreeshap>=0.1",
+         "feature-engine>=1.6", "mrmr-selection>=0.2", "powershap>=0.0.10",
+         "sklearn-genetic-opt>=0.10", "stabl>=1.0",
+         # Geoprepare's real transitive deps (declared in geoprepare 0.6.260+
+         # but kept here as a fallback for older PyPI versions)
+         "pyresample", "cdsapi", "pymodis", "pyl4c", "beautifulsoup4",
+         "wget", "rioxarray", "affine",
         ], env=env)
 
     # pygeoutil is git-only (not on PyPI) and is imported by geocif/viz/plot.py.
