@@ -142,8 +142,8 @@ def load_hpc_modules() -> tuple[str, dict[str, str], str | None]:
     python_modules = ["python/3.12.9/anaconda", "python/3.11.7/anaconda"]
     gdal_modules = ["rh9/gdal/3.11.0", "rh9/gdal/3.5.3", "gdal/3.1.0", "gdal"]
 
-    py_load_attempts = " || ".join(f"module load {m}" for m in python_modules)
-    gdal_load_attempts = " || ".join(f"module load {m}" for m in gdal_modules)
+    py_modules_sh = " ".join(python_modules)
+    gdal_modules_sh = " ".join(gdal_modules)
 
     # Build env-capture regex programmatically so the grep is readable.
     capture_prefixes = (
@@ -156,10 +156,21 @@ def load_hpc_modules() -> tuple[str, dict[str, str], str | None]:
     script = textwrap.dedent(f"""
         set -e
 
-        # 1. Strip conda from PATH and env — system-wide /etc/profile.d/conda.sh
-        # on gsapp auto-activates (base) on every login. We want a clean slate.
+        # 1. Clean conda. Source /etc/profile.d/conda.sh so the `conda`
+        # function is defined in this non-login shell, then deactivate any
+        # active env (gsapp auto-activates `(base)` system-wide). Fallback:
+        # strip user-conda dirs from PATH if conda is unavailable.
+        if [ -r /etc/profile.d/conda.sh ]; then
+            . /etc/profile.d/conda.sh
+            while [ -n "$CONDA_DEFAULT_ENV" ]; do
+                conda deactivate 2>/dev/null || break
+            done
+        fi
+        # Defensive PATH strip — narrow patterns to user-conda installs only
+        # (e.g. ~/miniconda3, ~/anaconda3). Does NOT touch module-provided
+        # /apps/.../anaconda/bin (no "3" suffix in that dir name).
         PATH=$(echo "$PATH" | tr ':' '\\n' \\
-            | grep -viE '(miniconda|anaconda|/conda/|conda3)' \\
+            | grep -viE '(miniconda3|anaconda3|/conda3?/)' \\
             | paste -sd: -)
         export PATH
         unset CONDA_DEFAULT_ENV CONDA_PREFIX CONDA_SHLVL CONDA_PYTHON_EXE \\
@@ -178,10 +189,26 @@ def load_hpc_modules() -> tuple[str, dict[str, str], str | None]:
             exit 1
         fi
 
-        # 3. Purge and load modules.
+        # 3. Purge and load. Use a sequential for-loop in the CURRENT shell
+        # (no subshell `( ... )` — PATH changes from `module load` must
+        # persist for steps 4-6 to find the loaded python and gdal-config).
         module purge 2>/dev/null || true
-        ( {py_load_attempts} ) 2>/dev/null || {{ echo "PY_LOAD_FAILED" >&2; exit 1; }}
-        ( {gdal_load_attempts} ) 2>/dev/null || echo "GDAL_LOAD_FAILED" >&2
+
+        PY_OK=0
+        for m in {py_modules_sh}; do
+            if module load "$m" 2>/dev/null; then PY_OK=1; break; fi
+        done
+        [ "$PY_OK" = "1" ] || {{ echo "PY_LOAD_FAILED" >&2; exit 1; }}
+
+        GDAL_OK=0
+        for m in {gdal_modules_sh}; do
+            if module load "$m" 2>/dev/null; then GDAL_OK=1; break; fi
+        done
+        [ "$GDAL_OK" = "1" ] || echo "GDAL_LOAD_FAILED" >&2
+
+        # Diagnostic: show what's actually loaded (goes to stderr → visible in installer output).
+        echo "--- module list after load ---" >&2
+        module list 2>&1 >&2 || true
 
         # 4. Find the loaded python — absolute path, so the parent process
         # doesn't rely on PATH ordering.
@@ -198,6 +225,8 @@ def load_hpc_modules() -> tuple[str, dict[str, str], str | None]:
             GDAL_LIBS=$(gdal-config --libs 2>/dev/null || true)
             GDAL_LIB_DIR=$(echo "$GDAL_LIBS" | grep -oE '\\-L[^ ]+' | head -1 | sed 's/^-L//')
             echo "GDAL_LIB_DIR=$GDAL_LIB_DIR"
+            echo "GDAL_CONFIG_PATH=$(command -v gdal-config)" >&2
+            echo "GDAL_VERSION=$(gdal-config --version 2>/dev/null)" >&2
         fi
 
         # 6. Dump relevant env vars so Python inherits the post-load state.
@@ -206,6 +235,12 @@ def load_hpc_modules() -> tuple[str, dict[str, str], str | None]:
     """)
 
     result = run_bash(script, capture=True, check=True)
+
+    # Surface the bash script's stderr (module list, gdal-config diagnostics)
+    # so the user can see what actually loaded.
+    if result.stderr:
+        for line in result.stderr.rstrip().splitlines():
+            print(f"      {line}")
 
     python_cmd = "python3"
     gdal_lib_dir: str | None = None
