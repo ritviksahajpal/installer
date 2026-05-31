@@ -16,6 +16,8 @@ Stdlib-only; requires Python 3.8+ to bootstrap (uv handles the target Python).
 
 from __future__ import annotations
 
+__version__ = "0.3.0"
+
 import argparse
 import contextlib
 import os
@@ -414,6 +416,14 @@ def install_geocif(
         if result.returncode != 0:
             warn(f"  Group '{label}' had install issues — see above; continuing")
 
+    # Post-supplemental: some ML feature-selection libs (notably `arfs` and
+    # `fasttreeshap`) carry old shap pins that uv resolves by downgrading shap
+    # to 0.45.x. shap 0.45 was built against numpy 1.x and ImportError's
+    # against numpy 2.x ("module compiled using NumPy 1.x cannot be run in
+    # NumPy 2.x"). Re-upgrade shap to the latest compatible release.
+    info("Restoring latest shap (feature-selection group may have downgraded it)")
+    run([uv, "pip", "install", "--upgrade", "--no-deps", "shap"], env=env, check=False)
+
     # pygeoutil is git-only (not on PyPI) and is imported by geocif/viz/plot.py.
     # PyPI forbids URL deps in published packages, so geocif's pyproject can't
     # declare it directly — the installer pulls it explicitly.
@@ -432,27 +442,61 @@ def install_geocif(
     if platform == "umd_hpc" and gdal_lib_dir and gdal_env is not None:
         info("Installing GDAL build deps (setuptools, wheel, numpy, cython)")
         run([uv, "pip", "install",
-             "setuptools<81", "wheel", "numpy<2.5", "cython"], env=env)
+             "setuptools<81", "wheel", "numpy", "cython"], env=env)
         info(f"Final source build of GDAL==3.11.0 against module libgdal at {gdal_lib_dir} (overwrites any wheel uv installed)")
+        # --no-cache to avoid reusing a previous broken build artifact.
         run([uv, "pip", "install",
              "--no-binary", "gdal",
              "--no-build-isolation",
+             "--no-cache",
              "--force-reinstall", "--no-deps",
              "gdal==3.11.0"], env=gdal_env)
 
-        # Sanity check: confirm _gdal*.so actually landed.
-        found_so = False
+        # Sanity check: look specifically for the _gdal extension (NOT
+        # _gdalconst, _gdal_array, etc. — those are separate, smaller
+        # extensions; a build can ship _gdalconst.so but skip the main
+        # _gdal.so silently if something is wrong).
+        gdal_so_found = False
+        osgeo_dir = None
         for pylib in (venv_dir / "lib").glob("python*"):
-            osgeo_dir = pylib / "site-packages" / "osgeo"
-            if not osgeo_dir.exists():
-                continue
-            so_files = list(osgeo_dir.glob("_gdal*.so"))
-            if so_files:
-                ok(f"GDAL C extension: {so_files[0].name}")
-                found_so = True
+            cand = pylib / "site-packages" / "osgeo"
+            if cand.exists():
+                osgeo_dir = cand
                 break
-        if not found_so:
-            warn("_gdal*.so NOT FOUND in venv site-packages — GDAL import will fail")
+        if osgeo_dir:
+            main_gdal_so = (
+                list(osgeo_dir.glob("_gdal.cpython-*.so"))
+                + list(osgeo_dir.glob("_gdal.abi3.so"))
+                + list(osgeo_dir.glob("_gdal.so"))
+            )
+            if main_gdal_so:
+                ok(f"GDAL main extension: {main_gdal_so[0].name}")
+                gdal_so_found = True
+                # Confirm RPATH was baked into the .so
+                if shutil.which("readelf"):
+                    rp = subprocess.run(
+                        ["readelf", "-d", str(main_gdal_so[0])],
+                        capture_output=True, text=True, check=False,
+                    )
+                    rpath_lines = [
+                        ln for ln in (rp.stdout or "").splitlines()
+                        if "RPATH" in ln or "RUNPATH" in ln
+                    ]
+                    if rpath_lines:
+                        for ln in rpath_lines:
+                            info(f"  {ln.strip()}")
+                    else:
+                        warn("  No RPATH/RUNPATH in _gdal.so — runtime may fail to find libgdal")
+            else:
+                other_sos = sorted(p.name for p in osgeo_dir.glob("_*.so"))
+                err("_gdal.cpython-*.so NOT FOUND in venv site-packages.")
+                err(f"Found other extensions in osgeo/: {other_sos}")
+                err("The GDAL source build silently skipped the main extension.")
+                err("Likely fix: clear the uv build cache and rerun")
+                err(f"  rm -rf {os.environ.get('UV_CACHE_DIR', '~/.cache/uv')}/builds-v0")
+                err(f"  python install.py --yes")
+        else:
+            warn("osgeo/ dir not found in venv — gdal install completely failed")
 
 # -------- Activation scripts --------
 
@@ -754,6 +798,7 @@ def default_install_base(platform: str) -> pathlib.Path:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Cross-platform geocif/geoprepare installer.")
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--install-base", type=pathlib.Path, default=None,
                    help="Parent dir for the geo-stack env (default per platform).")
     p.add_argument("--editable", type=str, default=None,
@@ -778,6 +823,7 @@ def main() -> None:
             "Non-interactive shell detected (no TTY). Re-run with --yes."
         )
 
+    info(f"installer version: {__version__}")
     platform = args.platform if args.platform != "auto" else detect_platform()
     info(f"Detected platform: {platform}")
 
