@@ -394,7 +394,8 @@ def install_geocif(
         "ML trainers (ml/trainers.py)": [
             "crepes", "cubist", "mapie", "merf", "ngboost",
             "tabpfn-extensions", "treeple", "ydf",
-            "desReg", "geospaNN",
+            "desReg",
+            # geospaNN excluded — install manually if needed
         ],
         "ML feature selection (ml/feature_selection.py)": [
             "BorutaShap", "arfs", "fasttreeshap", "feature-engine",
