@@ -16,7 +16,7 @@ Stdlib-only; requires Python 3.8+ to bootstrap (uv handles the target Python).
 
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 import argparse
 import contextlib
@@ -28,6 +28,34 @@ import subprocess
 import sys
 import textwrap
 import urllib.request
+
+
+class _Tee:
+    """Write to multiple streams. Used to mirror stdout/stderr to a log file."""
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data: str) -> int:
+        for s in self.streams:
+            try:
+                s.write(data)
+                s.flush()
+            except Exception:
+                pass
+        return len(data)
+
+    def flush(self) -> None:
+        for s in self.streams:
+            try:
+                s.flush()
+            except Exception:
+                pass
+
+    def isatty(self) -> bool:
+        return getattr(self.streams[0], "isatty", lambda: False)()
+
+
+_LOG_FH = None  # set in main() if --log-file passed
 
 # -------- ANSI colors (auto-disabled on non-TTY / Windows legacy) --------
 
@@ -66,18 +94,32 @@ def is_umd_hpc() -> bool:
 # -------- Subprocess helpers --------
 
 def run(cmd, *, env=None, check=True, capture=False, shell=False, cwd=None):
-    """Run a command; print it; surface stderr on failure."""
+    """Run a command; print it; surface stderr on failure.
+
+    When _LOG_FH is set (via --log-file), forces capture so subprocess output
+    is mirrored through Python's stdout/stderr (which are teed to the log).
+    Otherwise lets subprocess inherit stdout/stderr directly for speed.
+    """
     if isinstance(cmd, list):
         printable = " ".join(cmd)
     else:
         printable = cmd
     info(f"$ {printable}")
+    do_capture = capture or (_LOG_FH is not None)
     result = subprocess.run(
         cmd, env=env, shell=shell, cwd=cwd,
-        stdout=subprocess.PIPE if capture else None,
-        stderr=subprocess.PIPE if capture else None,
+        stdout=subprocess.PIPE if do_capture else None,
+        stderr=subprocess.PIPE if do_capture else None,
         text=True,
     )
+    if _LOG_FH is not None:
+        # Relay captured output to (teed) stdout/stderr so the log gets it.
+        if result.stdout:
+            sys.stdout.write(result.stdout)
+            sys.stdout.flush()
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+            sys.stderr.flush()
     if check and result.returncode != 0:
         if capture and result.stderr:
             err(result.stderr.strip())
@@ -252,6 +294,14 @@ def load_hpc_modules() -> tuple[str, dict[str, str], str | None]:
     for k in list(new_env):
         if k.startswith("CONDA_") or k in ("_CE_CONDA", "_CE_M", "PYTHONHOME"):
             new_env.pop(k, None)
+    # PYTHONPATH from the HPC GDAL module points at its pre-built osgeo
+    # bindings. If we keep it in base_env, those bindings shadow the venv's
+    # properly-built osgeo at runtime (verify subprocess sees module's
+    # incomplete bindings → "No module named '_gdal'"). activate.sh already
+    # `unset PYTHONPATH`; we do the same here so subprocess runs see the
+    # same env.
+    new_env.pop("PYTHONPATH", None)
+    new_env["PYTHONNOUSERSITE"] = "1"
 
     for line in (result.stdout or "").splitlines():
         if line.startswith("PYTHON_CMD="):
@@ -811,6 +861,8 @@ def parse_args() -> argparse.Namespace:
                    help="On non-HPC, write a uv-PATH line to ~/.bashrc.")
     p.add_argument("--yes", "-y", action="store_true",
                    help="Skip interactive confirmation.")
+    p.add_argument("--log-file", type=pathlib.Path, default=None,
+                   help="Tee all output (including subprocess stdout/stderr) to this file.")
     return p.parse_args()
 
 def main() -> None:
@@ -822,6 +874,17 @@ def main() -> None:
         raise SystemExit(
             "Non-interactive shell detected (no TTY). Re-run with --yes."
         )
+
+    # Set up log file tee BEFORE any other output so the log captures
+    # everything from the platform-detection step onward.
+    global _LOG_FH
+    if args.log_file:
+        log_path = args.log_file.expanduser().resolve()
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        _LOG_FH = open(log_path, "a", buffering=1)
+        sys.stdout = _Tee(sys.__stdout__, _LOG_FH)
+        sys.stderr = _Tee(sys.__stderr__, _LOG_FH)
+        info(f"Logging to: {log_path}")
 
     info(f"installer version: {__version__}")
     platform = args.platform if args.platform != "auto" else detect_platform()
