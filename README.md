@@ -32,7 +32,7 @@ python install.py --yes
 ### 2. Activate the env (run in every new shell)
 
 ```bash
-source /gpfs/data1/cmongp1/$USER/geo-stack/geo-stack/activate.sh
+source /gpfs/data1/cmongp1/$USER/geo-stack/activate.sh
 ```
 
 ### 3. Install additional Python libraries (after activating)
