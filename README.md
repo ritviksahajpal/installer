@@ -1,96 +1,25 @@
-# geocif + geoprepare Installer
+# geocif + geoprepare + octvi installer (pixi)
 
-Cross-platform installer for the `geocif` ML crop-yield model and its
-`geoprepare` preprocessing dependency. Detects the platform at runtime and
-provisions a Python virtual environment with all dependencies resolved via
-`uv` and `geocif`'s `pyproject.toml`.
+Cross-platform installer that provisions a self-contained
+[pixi](https://pixi.sh) environment for the `geocif` crop-yield model, its
+`geoprepare` preprocessor, and the `octvi` NDVI/GCVI downloader.
 
-Supported platforms:
-- **Windows** (local)
-- **UMD HPC** (`gsapp`, with Lmod modules)
-- **Generic Linux** (no module system required)
-- **macOS** (best-effort; macOS GDAL wheels are sparse)
+**No conda, no uv, no system GDAL module, no CUDA, no compiler gymnastics.**
+conda-forge ships its own libgdal + a CPU PyTorch build + every binary dep, so a
+single `pixi install` does the whole job. One lockfile reproduces the *identical*
+environment on every platform.
 
-**Conda is NOT required** on any platform. The installer uses [uv](https://github.com/astral-sh/uv) for Python and venv management; conda interactions are limited to *cleaning up* its state on HPC where the system auto-activates a base env.
+Supported platforms (auto-detected):
 
----
-
-## Run on UMD HPC (gsapp)
-
-### 1. First-time install
-
-```bash
-ssh gsapp                                       # login
-cd /gpfs/data1/cmongp1/$USER                    # or your project area
-git clone https://github.com/ritviksahajpal/installer.git
-cd installer
-python install.py --yes
-```
-
-> First run takes ~3–5 minutes (downloads uv + Python 3.12.9 module + ~150 PyPI packages + a one-time source build of GDAL bindings).
-
-### 2. Activate the env (run in every new shell)
-
-```bash
-source /gpfs/data1/cmongp1/$USER/geo-stack/activate.sh
-```
-
-### 3. Install additional Python libraries (after activating)
-
-```bash
-uv pip install <package>                # add a new package
-uv pip install --upgrade <package>      # upgrade an existing one
-```
+| | Windows | UMD HPC (gsapp) | Generic / managed Linux | Linux ARM (aarch64) | macOS |
+|---|---|---|---|---|---|
+| GDAL / torch | conda-forge | conda-forge | conda-forge | conda-forge | conda-forge |
+| module load? | — | **no** | — | — | — |
+| special handling | — | cache → `/gpfs` | writable `TMPDIR` | ydf/treeple/rbeast handled | best-effort |
 
 ---
 
-To **update** the installer later (without rebuilding the venv):
-```bash
-cd /gpfs/data1/cmongp1/$USER/installer
-git pull
-```
-
-To **rebuild the venv** (after a `git pull`, or if it gets broken):
-```bash
-python install.py --yes        # auto-deletes the old venv and rebuilds
-```
-
----
-
-## Run on Windows (local)
-
-### 1. First-time install
-
-```powershell
-git clone https://github.com/ritviksahajpal/installer.git
-cd installer
-python install.py --yes
-```
-
-### 2. Activate the env (run in every new shell)
-
-```powershell
-# PowerShell
-. C:\Users\<you>\geo-stack-env\geo-stack\activate.ps1
-
-# cmd.exe
-C:\Users\<you>\geo-stack-env\geo-stack\activate.bat
-```
-
-### 3. Install additional Python libraries (after activating)
-
-```powershell
-uv pip install <package>                # add a new package
-uv pip install --upgrade <package>      # upgrade an existing one
-```
-
-> **Deactivate** with `deactivate` (PowerShell — a function defined by activate.ps1) or the `deactivate.bat` script in the env dir (cmd.exe — do **not** use plain `deactivate` in cmd; conda hijacks it).
-
----
-
-## Run on generic Linux / macOS
-
-### 1. First-time install
+## Quick start
 
 ```bash
 git clone https://github.com/ritviksahajpal/installer.git
@@ -98,159 +27,162 @@ cd installer
 python install.py --yes
 ```
 
-### 2. Activate the env (run in every new shell)
+`install.py` (stdlib-only, needs Python 3.8+ to bootstrap) will:
+
+1. Install pixi if it's not already on PATH.
+2. Write a validated `pixi.toml` into `<install-base>/geo-stack/`.
+3. Run `pixi install` — conda-forge binaries + geocif/geoprepare from PyPI +
+   octvi/pygeoutil from git + the PyPI-only ML libs.
+4. Write an `activate` helper and verify the imports.
+
+First run downloads a few hundred MB (once; cached afterwards).
+
+### Enter the environment
 
 ```bash
-source ~/geo-stack-env/geo-stack/activate.sh
+# Linux / macOS / HPC
+source <install-base>/geo-stack/activate.sh        # drops you into `pixi shell`
+
+# Windows PowerShell
+. <install-base>\geo-stack\activate.ps1
 ```
 
-### 3. Install additional Python libraries (after activating)
+Or run one-off commands without a subshell:
 
 ```bash
-uv pip install <package>                # add a new package
-uv pip install --upgrade <package>      # upgrade an existing one
+pixi run --manifest-path <install-base>/geo-stack/pixi.toml python -c "import geocif"
 ```
 
-> If you don't have Python 3.11 on PATH, uv will download a standalone build during install.
+### Default install locations
+
+| Platform | `<install-base>` |
+|---|---|
+| UMD HPC | `/gpfs/data1/cmongp1/$USER` |
+| Windows | `%USERPROFILE%\geo-stack-env` |
+| Linux / macOS | `~/geo-stack-env` |
+
+Override with `--install-base DIR`.
 
 ---
 
-## Common flags
+## Per-platform notes
+
+### UMD HPC (gsapp)
+```bash
+ssh gsapp
+cd /gpfs/data1/cmongp1/$USER
+git clone https://github.com/ritviksahajpal/installer.git && cd installer
+python install.py --yes
+```
+- The pixi package cache is redirected to `<install-base>/.pixi-cache` (keeps it
+  off the quota'd `/home`).
+- No `module load` — conda-forge's libgdal replaces `rh9/gdal/3.11.0`.
+
+### Managed Linux / Jupyter boxes (e.g. AWS "terrahub", often ARM)
+These frequently force `TMPDIR` to a read-only path, which breaks pixi's own
+installer (`mktemp ... Permission denied`). `install.py` sets a writable
+`TMPDIR` (`<install-base>/.tmp`) before installing pixi, so it just works. If
+`pixi` isn't found afterwards, add it to PATH:
+```bash
+export PATH="$HOME/.pixi/bin:$PATH"
+```
+On aarch64, three compiled backends are handled automatically:
+`ydf`/`treeple` were removed from geocif; `rbeast`, `scikit-misc`, `pymupdf`,
+`sklearn-genetic-opt` are taken from PyPI (which has ARM wheels); `cubist`
+compiles from source with the box's gcc.
+
+### Windows / generic Linux / macOS
+Just `python install.py --yes`. pixi downloads its own Python 3.11 and all
+conda-forge binaries — nothing needs to pre-exist.
+
+---
+
+## Developer (editable) install
+
+Working on the source? Point the installer at your local clones:
+
+```bash
+python install.py \
+    --editable-geocif      /path/to/geocif \
+    --editable-geoprepare  /path/to/geoprepare \
+    --editable-octvi       /path/to/octvi \
+    --yes
+```
+
+Edits in those repos are live immediately (no reinstall). Anything not passed
+`--editable-*` comes from PyPI (geocif, geoprepare) or git (octvi, pygeoutil).
+
+---
+
+## CLI reference
 
 ```text
---install-base DIR         Parent dir for the env. Default:
-                             UMD HPC : /gpfs/data1/cmongp1/$USER
-                             Windows : %USERPROFILE%\geo-stack-env
-                             Linux/macOS: ~/geo-stack-env
---editable PATH            Install geocif as editable from a local clone.
---editable-geoprepare PATH Install geoprepare as editable from a local clone.
+--install-base DIR         Parent dir for the geo-stack env (default per platform).
+--editable-geocif PATH     Install geocif editable from a local clone.
+--editable-geoprepare PATH Install geoprepare editable from a local clone.
+--editable-octvi PATH      Install octvi editable from a local clone.
+--octvi-git URL            octvi git URL when not editable
+                             (default: https://github.com/ritviksahajpal/octvi.git).
 --platform NAME            Override detection: windows|umd_hpc|linux|macos|auto.
---write-shell-rc           On Linux/macOS, add `~/.local/bin` to ~/.bashrc
-                           (always done on UMD HPC).
---yes / -y                 Skip confirmation prompts (required for batch jobs).
+--yes / -y                 Skip the confirmation prompt (required for batch jobs).
 ```
 
 ---
 
-## Per-platform behavior
+## Day-to-day
 
-| | Windows | UMD HPC | Generic Linux | macOS |
-|---|---|---|---|---|
-| Python | 3.11 (system if found, else uv installs) | module `python/3.12.9/anaconda` (3.11.7 fallback) | 3.11 (system if found, else uv installs) | 3.11 (system if found, else uv installs) |
-| GDAL | Gohlke `cp311` wheel pre-installed | `rh9/gdal/3.11.0` module + source build with embedded RPATH | PyPI wheel `gdal==3.11.0` | PyPI wheel |
-| `~/.bashrc` | not touched | minimal: `export PATH="$HOME/.local/bin:$PATH"` | only with `--write-shell-rc` | only with `--write-shell-rc` |
-| Activation helpers | `activate.ps1`, `activate.bat`, `deactivate.bat` | `activate.sh` | `activate.sh` | `activate.sh` |
-| Conda touched? | No | Only to *deactivate* if base is active | No | No |
+```bash
+pixi add <pkg>                 # add a conda-forge package to the env
+pixi add --pypi <pkg>          # add a PyPI-only package
+pixi update                    # bump within constraints, refresh the lock
+pixi run <cmd>                 # run in the env without a subshell
+```
+
+You only re-run `install.py` to rebuild from scratch (it overwrites the manifest
+and re-solves).
 
 ---
 
 ## What's installed
 
-`install.py` calls `uv pip install geocif`. Everything else is resolved by uv from
-[`geocif/pyproject.toml`](https://github.com/ritviksahajpal/geocif/blob/main/pyproject.toml):
+The generated `pixi.toml` pins the whole stack, validated to resolve across
+`win-64`, `linux-64`, and `linux-aarch64`:
 
-- **Geospatial**: gdal, rasterio, geopandas, shapely, pyproj, rtree, fiona, pyogrio
-- **Climate/array**: xarray (>=2026.2.0), pooch, icclim, arrow, cftime, netcdf4
-- **ML**: catboost, shap, optuna, tabpfn, tabicl, statsmodels, scikit-misc, scikit-learn, torch
-- **Vis**: seaborn, palettable, scienceplots, cartopy, plotly
-- **Other**: boruta, choix, logzero, Rbeast
+- **conda-forge** (`[dependencies]`): the geospatial stack (gdal, rasterio,
+  fiona, pyproj, shapely, rtree, cartopy, geopandas, rioxarray, netcdf4, pyhdf,
+  pyresample), numerics (numpy, pandas, scipy, xarray, matplotlib), compiled ML
+  (catboost, scikit-learn, numba, statsmodels, shap, pytorch-cpu), pysal, the
+  dashboard/gee/spatial/narrative extras, and download clients (cdsapi, pymodis,
+  earthaccess, pydap).
+- **PyPI** (`[pypi-dependencies]`): `geocif` (≥0.4.880) and `geoprepare`
+  (≥0.6.286), plus PyPI-only / no-conda-ARM-wheel libs (tabpfn, tabicl, cubist,
+  merf, pyeogpr, Rbeast, sklearn-genetic-opt, aquacrop, pymupdf, …).
+- **git**: `octvi` (the fork carrying the GCVI Int32 fix) and `pygeoutil`.
 
-Plus `geoprepare` and `pygeoutil` (the latter via git, since it's not on PyPI).
-
-**CUDA / nvidia-** packages are excluded* by `geocif/pyproject.toml`'s `[tool.uv] override-dependencies`. To add CUDA torch:
-
-```bash
-uv pip install torch --index-url https://download.pytorch.org/whl/cu128
-```
-
----
-
-## Activation flow details
-
-### UMD HPC
-
-`activate.sh` does this each time you source it:
-
-1. Strips conda from PATH (uses `conda deactivate` if available, then filters out user-conda dirs as a safety net) and unsets `CONDA_*` env vars
-2. Bootstraps the `module` command (sources `/etc/profile.d/modules.sh` if not already a function)
-3. `module purge` then `module load python/3.12.9/anaconda` + `module load rh9/gdal/3.11.0`
-4. Prepends the GDAL module's `lib/` to `LD_LIBRARY_PATH` (so the venv's `_gdal*.so` finds the right `libgdal.so`)
-5. Sources the venv's `bin/activate`
-6. Sanity-checks `from osgeo import gdal`
-
-You don't need to `conda deactivate` first — `activate.sh` handles it. You don't need to load any modules first — `activate.sh` handles that too.
-
-### Windows
-
-`activate.bat` (cmd) and `activate.ps1` (PowerShell) are *self-contained* — they set `VIRTUAL_ENV`, prepend the venv's `Scripts` dir to PATH, decorate the prompt, and don't depend on uv shipping an internal activate script (which it doesn't always).
-
-`deactivate.bat` is shipped alongside (cmd.exe doesn't get a function-based `deactivate` like PowerShell does, and the system `deactivate` is hijacked by conda).
-
----
-
-## Editable / development install
-
-Working on geocif or geoprepare locally? Point the installer at your clones:
-
-```bash
-python install.py \
-    --editable /path/to/your/geocif \
-    --editable-geoprepare /path/to/your/geoprepare \
-    --yes
-```
-
-Edits in those repos are visible immediately without reinstall.
+> **octvi note:** the default `--octvi-git` is `ritviksahajpal/octvi`. Make sure
+> that fork has the GCVI Int32 fix; upstream `nasaharvest/octvi` does not, and an
+> unfixed octvi produces wrong GCVI output.
 
 ---
 
 ## Troubleshooting
 
-### "Stuck" at `[!] Existing venv found at ...`
-GPFS metadata operations are slow. `shutil.rmtree` on a venv with 100k+ files can take 2–10 minutes. Either wait, or kill + pre-clean (much faster):
-
-```bash
-rm -rf <install-base>/geo-stack
-python install.py --yes
-```
-
-### `Exception: Python bindings of GDAL X require at least libgdal X, but Y was found` (HPC)
-The GDAL module didn't actually load — `gdal-config` is finding the system `/usr/lib64/libgdal.so` instead of the module's. Causes:
-- Running from a head node where modules are restricted — try a compute node
-- Module-bootstrap step failed silently — re-run with output captured: `python install.py --yes 2>&1 | tee install.log`, then check for the `--- module list after load ---` diagnostic
-
-### `from osgeo import gdal` fails: "undefined symbol" (HPC)
-The `_gdal*.so` was linked against a different `libgdal` than what's on `LD_LIBRARY_PATH`. Confirm RPATH is baked in:
-```bash
-readelf -d <install-base>/geo-stack/.venv/lib/python3.12/site-packages/osgeo/_gdal*.so | grep -iE 'rpath|runpath'
-```
-Should show the GDAL module's lib dir. If empty, the GDAL bindings were installed without source-build (probably via a wheel) — re-run install.py.
-
-### `deactivate` doesn't work on Windows cmd
-Conda hijacks the `deactivate` command name on Windows. Use the `deactivate.bat` script in your install dir instead:
-```cmd
-%USERPROFILE%\geo-stack-env\geo-stack\deactivate.bat
-```
-
-### Non-interactive shell (SLURM batch)
-The installer's `Continue? [y/N]` prompt would hang. Pass `--yes` to skip all prompts. If you forgot and it hung, kill it and re-run.
+| Symptom | Fix |
+|---|---|
+| `mktemp: … Permission denied` while installing pixi | Handled automatically (writable `TMPDIR`); if it still fails, `export TMPDIR=$HOME/tmp` and re-run |
+| `pixi: command not found` after install | `export PATH="$HOME/.pixi/bin:$PATH"` (add to `~/.bashrc`) |
+| `libcurl.so.4: no version information available` | Harmless warning from a base-conda libcurl — ignore |
+| Home quota fills during install | Handled on HPC (cache on `/gpfs`); elsewhere set `PIXI_CACHE_DIR=<big-disk>` |
+| `cubist` build fails on ARM | Report it — it can be gated off aarch64 like ydf/treeple were |
+| GCVI output looks wrong | You're on an unfixed octvi — use the fork with the Int32 fix |
 
 ---
 
-## Updating packages later
+## Legacy installer
 
-See the "Install additional Python libraries" snippet in your platform's section above for the day-to-day `uv pip install` workflow. To upgrade the full stack:
-
-```bash
-uv pip install --upgrade --reinstall geocif      # geocif + all transitives
-```
-
-You only need to re-run `install.py` if you want to rebuild from scratch (e.g., switching Python versions, recovering from a broken env).
-
----
-
-## Legacy bash installer
-
-`install_geo_environment.sh` is the previous HPC-only bash installer. It is **deprecated** but kept as a fallback for HPC hosts where no Python is available before module load. New installs should use `install.py`.
+`install_geo_environment.sh` is the previous **uv + Lmod-module + GDAL-source-build**
+HPC installer. It is superseded by this pixi `install.py` and kept only for
+historical reference. New installs should use `install.py`.
 
 ---
 

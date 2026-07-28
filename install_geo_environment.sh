@@ -6,13 +6,15 @@
 # FIXED: Proper UV PATH handling
 # ============================================
 #
-# DEPRECATED: Use install.py instead.
-#   python install.py [--install-base DIR] [--editable PATH]
+# DEPRECATED / LEGACY: Use install.py instead.
+#   python install.py --yes
 #
-# install.py works on Windows, UMD HPC, generic Linux, and macOS, and uses
-# geocif/pyproject.toml as the source of truth for dependencies. This bash
-# script is kept only as a fallback for HPC hosts where Python is not
-# available before the module system loads it.
+# install.py is now a PIXI installer: it provisions a conda-forge environment
+# (own libgdal, CPU pytorch, all binary deps) with a single `pixi install` on
+# Windows, UMD HPC, generic/managed Linux (incl. ARM), and macOS — no uv, no
+# module load, no GDAL source-build, no cgohlke wheels. THIS bash script is the
+# old uv + Lmod-module + GDAL-source-build installer, kept only for historical
+# reference. Do not use it for new installs.
 # ============================================
 
 set -e  # Exit on any error
