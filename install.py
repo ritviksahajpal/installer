@@ -106,39 +106,51 @@ def run(cmd, *, env=None, check=True, cwd=None, shell=False):
 
 # -------- pixi bootstrap --------
 
-def pixi_bin_candidates() -> list[pathlib.Path]:
+def pixi_bin_candidates(pixi_home: pathlib.Path | None = None) -> list[pathlib.Path]:
+    exe = "pixi.exe" if sys.platform == "win32" else "pixi"
+    cands: list[pathlib.Path] = []
+    if pixi_home:
+        cands.append(pixi_home / "bin" / exe)
     home = pathlib.Path.home()
     if sys.platform == "win32":
         base = pathlib.Path(os.environ.get("USERPROFILE", home))
-        return [base / ".pixi" / "bin" / "pixi.exe"]
-    return [home / ".pixi" / "bin" / "pixi"]
+        cands.append(base / ".pixi" / "bin" / exe)
+    else:
+        cands.append(home / ".pixi" / "bin" / exe)
+    return cands
 
 
-def ensure_pixi(platform: str, tmpdir: pathlib.Path) -> str:
+def ensure_pixi(platform: str, tmpdir: pathlib.Path,
+                pixi_home: pathlib.Path | None = None,
+                base_env: dict | None = None) -> str:
     """Return an absolute path to a working pixi binary, installing it if needed.
 
-    Managed Linux boxes (e.g. AWS Jupyter) often force TMPDIR to a read-only
-    location, which breaks pixi's installer (`mktemp ... Permission denied`).
-    We point TMPDIR at a writable dir before running the installer.
+    On HPC / quota'd hosts we install pixi under PIXI_HOME on a big disk — the
+    default ~/.pixi lives on a small /home ("Disk quota exceeded"). Managed
+    Linux boxes also force TMPDIR to a read-only path, breaking pixi's installer
+    (`mktemp ... Permission denied`) — we point TMPDIR at a writable dir first.
     """
+    for cand in pixi_bin_candidates(pixi_home):
+        if cand.exists():
+            ok(f"pixi found: {cand}")
+            return str(cand)
     found = shutil.which("pixi")
     if found:
         ok(f"pixi found: {found}")
         return found
-    for cand in pixi_bin_candidates():
-        if cand.exists():
-            ok(f"pixi found: {cand}")
-            return str(cand)
 
     info("Installing pixi...")
+    env = dict(base_env or os.environ)
+    if pixi_home:
+        pixi_home.mkdir(parents=True, exist_ok=True)
+        env["PIXI_HOME"] = str(pixi_home)  # keep pixi off a quota'd /home
     if platform == "windows":
         run(
             'powershell -ExecutionPolicy ByPass -NoProfile -Command '
             '"irm -useb https://pixi.sh/install.ps1 | iex"',
-            shell=True,
+            shell=True, env=env,
         )
     else:
-        env = dict(os.environ)
         tmpdir.mkdir(parents=True, exist_ok=True)
         env["TMPDIR"] = str(tmpdir)  # dodge read-only /ASTG/tmp etc.
         if not (shutil.which("curl") or shutil.which("wget")):
@@ -146,16 +158,17 @@ def ensure_pixi(platform: str, tmpdir: pathlib.Path) -> str:
         tool = "curl -fsSL" if shutil.which("curl") else "wget -qO-"
         run(f"{tool} https://pixi.sh/install.sh | bash", shell=True, env=env)
 
-    for cand in pixi_bin_candidates():
+    for cand in pixi_bin_candidates(pixi_home):
         if cand.exists():
             ok(f"pixi installed: {cand}")
             return str(cand)
     found = shutil.which("pixi")
     if found:
         return found
+    fallback = (pixi_home or pathlib.Path.home() / ".pixi") / "bin"
     raise SystemExit(
         "pixi installed but binary not found. Add it to PATH and re-run:\n"
-        '  export PATH="$HOME/.pixi/bin:$PATH"'
+        f'  export PATH="{fallback}:$PATH"'
     )
 
 
@@ -315,14 +328,6 @@ def render_pixi_toml(
 # pixi has no persistent "activate" — you `pixi run <cmd>` or `pixi shell` from
 # the project dir. These thin wrappers just cd there and drop you into a shell.
 
-ACTIVATE_SH = """\
-#!/usr/bin/env bash
-# geo-stack: enter the pixi environment.  Usage: source activate.sh   (or run it)
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-export PATH="$HOME/.pixi/bin:$PATH"
-{cache_line}exec pixi shell --manifest-path "$HERE/pixi.toml"
-"""
-
 ACTIVATE_PS1 = """\
 # geo-stack: enter the pixi environment.  Usage: . .\\activate.ps1
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -331,14 +336,26 @@ pixi shell --manifest-path (Join-Path $Here "pixi.toml")
 """
 
 
-def write_activation(install_dir: pathlib.Path, platform: str, cache_dir: pathlib.Path | None) -> None:
+def write_activation(install_dir: pathlib.Path, platform: str, pixi_bin_dir: str,
+                     pixi_home: pathlib.Path | None, cache_dir: pathlib.Path | None) -> None:
     if platform == "windows":
         (install_dir / "activate.ps1").write_text(ACTIVATE_PS1, encoding="utf-8")
         ok(f"Wrote activate.ps1 in {install_dir}")
         return
-    cache_line = f'export PIXI_CACHE_DIR="{cache_dir}"\n' if cache_dir else ""
+    exports = [f'export PATH="{pixi_bin_dir}:$PATH"']
+    if pixi_home:
+        exports.append(f'export PIXI_HOME="{pixi_home}"')
+    if cache_dir:
+        exports.append(f'export PIXI_CACHE_DIR="{cache_dir}"')
+    body = (
+        "#!/usr/bin/env bash\n"
+        "# geo-stack: enter the pixi environment. Usage: source activate.sh\n"
+        'HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"\n'
+        + "\n".join(exports) + "\n"
+        + 'exec pixi shell --manifest-path "$HERE/pixi.toml"\n'
+    )
     path = install_dir / "activate.sh"
-    path.write_text(ACTIVATE_SH.format(cache_line=cache_line), encoding="utf-8")
+    path.write_text(body, encoding="utf-8")
     path.chmod(0o755)
     ok(f"Wrote activate.sh in {install_dir}")
 
@@ -424,17 +441,24 @@ def main() -> None:
 
     install_dir.mkdir(parents=True, exist_ok=True)
 
-    # Keep pixi's cache off small/quota'd homes (HPC /home, managed boxes).
+    # Keep pixi's binary (PIXI_HOME) AND package cache (PIXI_CACHE_DIR) off
+    # small/quota'd homes (HPC /home is tiny — "Disk quota exceeded"). On HPC
+    # both go under install_base (which is on /gpfs).
     cache_dir = None
+    pixi_home = None
     env = dict(os.environ)
     if platform in ("umd_hpc",) or is_umd_hpc():
         cache_dir = install_base / ".pixi-cache"
         cache_dir.mkdir(parents=True, exist_ok=True)
         env["PIXI_CACHE_DIR"] = str(cache_dir)
+        pixi_home = install_base / ".pixi-home"
+        env["PIXI_HOME"] = str(pixi_home)
+        info(f"pixi home:  {pixi_home}")
         info(f"pixi cache: {cache_dir}")
     env["UV_LOCK_TIMEOUT"] = "600"
 
-    pixi = ensure_pixi(platform, tmpdir=install_base / ".tmp")
+    pixi = ensure_pixi(platform, tmpdir=install_base / ".tmp",
+                       pixi_home=pixi_home, base_env=env)
 
     # Write the manifest (idempotent — overwrites any prior one).
     toml = render_pixi_toml(
@@ -449,7 +473,8 @@ def main() -> None:
     info("Solving + installing the environment (first run downloads a few hundred MB)...")
     run([pixi, "install", "--manifest-path", str(install_dir / "pixi.toml")], env=env)
 
-    write_activation(install_dir, platform, cache_dir)
+    pixi_bin_dir = str(pathlib.Path(pixi).parent)
+    write_activation(install_dir, platform, pixi_bin_dir, pixi_home, cache_dir)
     verify(pixi, install_dir, env)
 
     bar = "=" * 60
