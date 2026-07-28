@@ -335,12 +335,20 @@ $env:PATH = "$env:USERPROFILE\\.pixi\\bin;$env:PATH"
 pixi shell --manifest-path (Join-Path $Here "pixi.toml")
 """
 
+ACTIVATE_BAT = """\
+@echo off
+REM geo-stack: enter the pixi environment (cmd.exe).  Usage: activate.bat
+set "PATH=%USERPROFILE%\\.pixi\\bin;%PATH%"
+pixi shell --manifest-path "%~dp0pixi.toml"
+"""
+
 
 def write_activation(install_dir: pathlib.Path, platform: str, pixi_bin_dir: str,
                      pixi_home: pathlib.Path | None, cache_dir: pathlib.Path | None) -> None:
     if platform == "windows":
         (install_dir / "activate.ps1").write_text(ACTIVATE_PS1, encoding="utf-8")
-        ok(f"Wrote activate.ps1 in {install_dir}")
+        (install_dir / "activate.bat").write_text(ACTIVATE_BAT, encoding="utf-8")
+        ok(f"Wrote activate.ps1 + activate.bat in {install_dir}")
         return
     exports = [f'export PATH="{pixi_bin_dir}:$PATH"']
     if pixi_home:
@@ -478,11 +486,13 @@ def main() -> None:
     verify(pixi, install_dir, env)
 
     bar = "=" * 60
-    act = ("  . " + str(install_dir / "activate.ps1")) if platform == "windows" \
-        else ("  source " + str(install_dir / "activate.sh"))
     print(f"\n{_C['green']}{bar}\n  INSTALLATION COMPLETE\n{bar}{_C['reset']}\n")
     print("Enter the environment (each new shell):")
-    print(f"{_C['cyan']}{act}{_C['reset']}")
+    if platform == "windows":
+        print(f"{_C['cyan']}  PowerShell:  . {install_dir / 'activate.ps1'}{_C['reset']}")
+        print(f"{_C['cyan']}  cmd.exe:     {install_dir / 'activate.bat'}{_C['reset']}")
+    else:
+        print(f"{_C['cyan']}  source {install_dir / 'activate.sh'}{_C['reset']}")
     print("\nOr run one-off commands without a subshell:")
     print(f"{_C['cyan']}  pixi run --manifest-path {install_dir / 'pixi.toml'} python -c \"import geocif\"{_C['reset']}")
     print("\nAdd a package later:  pixi add <pkg>   |   pixi add --pypi <pkg>")
