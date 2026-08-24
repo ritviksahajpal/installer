@@ -23,12 +23,13 @@ Stdlib-only; needs Python 3.8+ to bootstrap (pixi manages the target Python).
 
 from __future__ import annotations
 
-__version__ = "1.0.0"  # pixi rewrite
+__version__ = "1.0.1"  # pixi rewrite
 
 import argparse
 import os
 import pathlib
 import platform as platform_mod
+import re
 import shutil
 import subprocess
 import sys
@@ -106,6 +107,39 @@ def run(cmd, *, env=None, check=True, cwd=None, shell=False):
 
 # -------- pixi bootstrap --------
 
+# pixi renamed the manifest's [project] table to [workspace] in 0.43.0. An
+# older pixi already on PATH fails on our manifest with an opaque error, so
+# gate on it explicitly rather than letting that surface to the user.
+MIN_PIXI = (0, 43, 0)
+
+
+def pixi_version(pixi_bin: str) -> tuple | None:
+    """(major, minor, patch) reported by `pixi --version`, or None if unreadable."""
+    try:
+        proc = subprocess.run([pixi_bin, "--version"], capture_output=True,
+                              text=True, timeout=30)
+    except Exception:
+        return None
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", (proc.stdout or "") + (proc.stderr or ""))
+    return tuple(int(g) for g in m.groups()) if m else None
+
+
+def check_pixi_version(pixi_bin: str) -> None:
+    """Reject a pre-existing pixi too old to understand the manifest we write."""
+    v = pixi_version(pixi_bin)
+    if v is None:
+        warn(f"Could not read the version of {pixi_bin}; continuing anyway.")
+        return
+    have, need = ".".join(map(str, v)), ".".join(map(str, MIN_PIXI))
+    if v < MIN_PIXI:
+        raise SystemExit(
+            f"pixi {have} at {pixi_bin} is too old (need >= {need}, the first\n"
+            "release with the [workspace] manifest table). Upgrade and re-run:\n"
+            f"  {pixi_bin} self-update"
+        )
+    ok(f"pixi version {have}")
+
+
 def pixi_bin_candidates(pixi_home: pathlib.Path | None = None) -> list[pathlib.Path]:
     exe = "pixi.exe" if sys.platform == "win32" else "pixi"
     cands: list[pathlib.Path] = []
@@ -133,10 +167,12 @@ def ensure_pixi(platform: str, tmpdir: pathlib.Path,
     for cand in pixi_bin_candidates(pixi_home):
         if cand.exists():
             ok(f"pixi found: {cand}")
+            check_pixi_version(str(cand))
             return str(cand)
     found = shutil.which("pixi")
     if found:
         ok(f"pixi found: {found}")
+        check_pixi_version(found)
         return found
 
     info("Installing pixi...")
@@ -267,7 +303,11 @@ tabpfn-extensions = ">=0.4"
 tabicl = ">=2.0.2"
 cubist = ">=1.0"
 merf = ">=1.0"
-pyeogpr = ">=2.4.7"
+# NOTE: pyeogpr intentionally omitted. It was published to PyPI in 2025 but has
+# since been DELETED (404), so pinning it makes every fresh solve fail with
+# "pyeogpr was not found in the package registry". geocif dropped it as a
+# dependency on 2026-08-22 (it was never imported); it lives on GitHub only
+# (daviddkovacs/pyeogpr). Re-add via git URL if it is ever actually needed.
 pangres = ">=4.0"
 stabl = ">=0.0.1"
 arfs = ">=2.0"
@@ -328,17 +368,20 @@ def render_pixi_toml(
 # pixi has no persistent "activate" — you `pixi run <cmd>` or `pixi shell` from
 # the project dir. These thin wrappers just cd there and drop you into a shell.
 
+# __PIXI_BIN__ is replaced with the pixi bin dir this installer actually
+# resolved - not always %USERPROFILE%\.pixi\bin (scoop/winget installs, a
+# custom PIXI_HOME).
 ACTIVATE_PS1 = """\
 # geo-stack: enter the pixi environment.  Usage: . .\\activate.ps1
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$env:PATH = "$env:USERPROFILE\\.pixi\\bin;$env:PATH"
+$env:PATH = "__PIXI_BIN__;$env:PATH"
 pixi shell --manifest-path (Join-Path $Here "pixi.toml")
 """
 
 ACTIVATE_BAT = """\
 @echo off
 REM geo-stack: enter the pixi environment (cmd.exe).  Usage: activate.bat
-set "PATH=%USERPROFILE%\\.pixi\\bin;%PATH%"
+set "PATH=__PIXI_BIN__;%PATH%"
 pixi shell --manifest-path "%~dp0pixi.toml"
 """
 
@@ -346,8 +389,10 @@ pixi shell --manifest-path "%~dp0pixi.toml"
 def write_activation(install_dir: pathlib.Path, platform: str, pixi_bin_dir: str,
                      pixi_home: pathlib.Path | None, cache_dir: pathlib.Path | None) -> None:
     if platform == "windows":
-        (install_dir / "activate.ps1").write_text(ACTIVATE_PS1, encoding="utf-8")
-        (install_dir / "activate.bat").write_text(ACTIVATE_BAT, encoding="utf-8")
+        ps1 = ACTIVATE_PS1.replace("__PIXI_BIN__", pixi_bin_dir)
+        bat = ACTIVATE_BAT.replace("__PIXI_BIN__", pixi_bin_dir)
+        (install_dir / "activate.ps1").write_text(ps1, encoding="utf-8")
+        (install_dir / "activate.bat").write_text(bat, encoding="utf-8")
         ok(f"Wrote activate.ps1 + activate.bat in {install_dir}")
         return
     exports = [f'export PATH="{pixi_bin_dir}:$PATH"']
@@ -360,7 +405,9 @@ def write_activation(install_dir: pathlib.Path, platform: str, pixi_bin_dir: str
         "# geo-stack: enter the pixi environment. Usage: source activate.sh\n"
         'HERE="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"\n'
         + "\n".join(exports) + "\n"
-        + 'exec pixi shell --manifest-path "$HERE/pixi.toml"\n'
+        # Not `exec`: this file is meant to be sourced, and exec would replace
+        # the user's interactive shell - closing their terminal on `exit`.
+        + 'pixi shell --manifest-path "$HERE/pixi.toml"\n'
     )
     path = install_dir / "activate.sh"
     path.write_text(body, encoding="utf-8")

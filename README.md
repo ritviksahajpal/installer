@@ -156,7 +156,7 @@ The generated `pixi.toml` pins the whole stack, validated to resolve across
   earthaccess, pydap).
 - **PyPI** (`[pypi-dependencies]`): `geocif` (≥0.4.880) and `geoprepare`
   (≥0.6.286), plus PyPI-only / no-conda-ARM-wheel libs (tabpfn, tabicl, cubist,
-  merf, pyeogpr, Rbeast, sklearn-genetic-opt, aquacrop, pymupdf, …).
+  merf, Rbeast, sklearn-genetic-opt, aquacrop, pymupdf, …).
 - **git**: `octvi` (the fork carrying the GCVI Int32 fix) and `pygeoutil`.
 
 > **octvi note:** the default `--octvi-git` is `ritviksahajpal/octvi`. Make sure
