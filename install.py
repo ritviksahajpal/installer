@@ -23,7 +23,7 @@ Stdlib-only; needs Python 3.8+ to bootstrap (pixi manages the target Python).
 
 from __future__ import annotations
 
-__version__ = "1.0.1"  # pixi rewrite
+__version__ = "1.0.2"  # pixi rewrite
 
 import argparse
 import os
@@ -232,7 +232,9 @@ pyresample = "*"
 # numerics / climate
 xarray = ">=2026.2.0"
 numpy = "*"
-pandas = "*"
+# <3: geocif >=0.4.889 requires pandas<3, and a conda-pinned pandas 3.x
+# makes the pypi solve unsatisfiable ("pinned-package-conflicts").
+pandas = "<3"
 scipy = "*"
 matplotlib = "<3.11"
 seaborn = "*"
@@ -321,6 +323,11 @@ pymupdf = ">=1.23"
 pdfplumber = ">=0.10"
 """
 
+# geocif <=0.4.932 still depends on the deleted pyeogpr, so no such release can
+# ever resolve; 0.4.933 is the first one without it and is therefore the floor.
+GEOCIF_MIN = "0.4.933"
+GEOPREPARE_MIN = "0.6.286"
+
 DEFAULT_OCTVI_GIT = "https://github.com/ritviksahajpal/octvi.git"
 PYGEOUTIL_GIT = "https://github.com/ritviksahajpal/pygeoutil.git"
 
@@ -338,8 +345,8 @@ def render_pixi_toml(
     editable_octvi: str | None,
     octvi_git: str,
 ) -> str:
-    geoprepare = _pkg_line("geoprepare", editable_geoprepare, '">=0.6.286"')
-    geocif = _pkg_line("geocif", editable_geocif, '">=0.4.880"')
+    geoprepare = _pkg_line("geoprepare", editable_geoprepare, f'">={GEOPREPARE_MIN}"')
+    geocif = _pkg_line("geocif", editable_geocif, f'">={GEOCIF_MIN}"')
     if editable_octvi:
         p = pathlib.Path(editable_octvi).expanduser().resolve().as_posix()
         octvi = f'octvi = {{ path = "{p}", editable = true }}'
@@ -486,8 +493,8 @@ def main() -> None:
     print("=" * 60)
     print(f"Platform:       {platform}  (conda subdir: {pixi_platform()})")
     print(f"Install dir:    {install_dir}")
-    print(f"geocif:         {args.editable_geocif or '(PyPI >=0.4.880)'}")
-    print(f"geoprepare:     {args.editable_geoprepare or '(PyPI >=0.6.286)'}")
+    print(f"geocif:         {args.editable_geocif or f'(PyPI >={GEOCIF_MIN})'}")
+    print(f"geoprepare:     {args.editable_geoprepare or f'(PyPI >={GEOPREPARE_MIN})'}")
     print(f"octvi:          {args.editable_octvi or args.octvi_git}")
     print("=" * 60)
     if not args.yes:
