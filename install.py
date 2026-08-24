@@ -23,7 +23,7 @@ Stdlib-only; needs Python 3.8+ to bootstrap (pixi manages the target Python).
 
 from __future__ import annotations
 
-__version__ = "1.0.2"  # pixi rewrite
+__version__ = "1.0.3"  # pixi rewrite
 
 import argparse
 import os
@@ -280,6 +280,10 @@ tqdm = "*"
 requests = "*"
 urllib3 = "*"
 beautifulsoup4 = "*"
+# pandas .xlsx engine: geoprepare reads the crop calendar via pd.read_excel
+# and geocif reads several .xlsx inputs, but neither declares it, so without
+# it geomerge dies with "Missing optional dependency 'openpyxl'".
+openpyxl = "*"
 setuptools = "<81"
 # download sources
 cdsapi = "*"
