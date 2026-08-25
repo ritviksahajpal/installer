@@ -23,7 +23,7 @@ Stdlib-only; needs Python 3.8+ to bootstrap (pixi manages the target Python).
 
 from __future__ import annotations
 
-__version__ = "1.0.3"  # pixi rewrite
+__version__ = "1.0.4"  # pixi rewrite
 
 import argparse
 import os
@@ -270,6 +270,11 @@ pooch = ">=1.8.0"
 choix = ">=0.3.4"
 palettable = ">=3.3.3"
 scienceplots = ">=2.0.0"
+# GMT + PyGMT so geocif viz/plot.py's pygmt backend renders IN-PROCESS
+# (no `pygmt_env` conda subprocess bridge). conda-forge gmt ships an
+# ABI-consistent libgmt on all three platforms; pygmt is noarch.
+gmt = ">=6.5"
+pygmt = ">=0.14"
 cachetools = ">=5.0"
 geopy = ">=2.0"
 arrow = ">=1.4.0"
@@ -334,6 +339,9 @@ GEOPREPARE_MIN = "0.6.286"
 
 DEFAULT_OCTVI_GIT = "https://github.com/ritviksahajpal/octvi.git"
 PYGEOUTIL_GIT = "https://github.com/ritviksahajpal/pygeoutil.git"
+# TabPFN-GSA (geospatial sparse attention for TabPFN) is not on PyPI at all;
+# it backs geocif's model="tabpfn_gsa" and imports as `tabpfn_gsa`.
+TABPFN_GSA_GIT = "https://github.com/ruid7181/TabPFN-GSA.git"
 
 
 def _pkg_line(name: str, editable_path: str | None, pypi_spec: str) -> str:
@@ -371,6 +379,7 @@ def render_pixi_toml(
         + "# fork carrying the GCVI Int32 fix (upstream nasaharvest lacks it).\n"
         + f"{octvi}\n"
         + f'pygeoutil = {{ git = "{PYGEOUTIL_GIT}" }}\n'
+        + f'tabpfn-gsa = {{ git = "{TABPFN_GSA_GIT}" }}\n'
         + _PYPI_ONLY
     )
 

@@ -151,13 +151,16 @@ The generated `pixi.toml` pins the whole stack, validated to resolve across
 - **conda-forge** (`[dependencies]`): the geospatial stack (gdal, rasterio,
   fiona, pyproj, shapely, rtree, cartopy, geopandas, rioxarray, netcdf4, pyhdf,
   pyresample), numerics (numpy, pandas, scipy, xarray, matplotlib), compiled ML
-  (catboost, scikit-learn, numba, statsmodels, shap, pytorch-cpu), pysal, the
-  dashboard/gee/spatial/narrative extras, and download clients (cdsapi, pymodis,
-  earthaccess, pydap).
+  (catboost, scikit-learn, numba, statsmodels, shap, pytorch-cpu), pysal, GMT
+  + PyGMT (so geocif's pygmt plot backend renders in-process), openpyxl (pandas'
+  .xlsx engine), the dashboard/gee/spatial/narrative extras, and download
+  clients (cdsapi, pymodis, earthaccess, pydap).
 - **PyPI** (`[pypi-dependencies]`): `geocif` (≥0.4.933) and `geoprepare`
   (≥0.6.286), plus PyPI-only / no-conda-ARM-wheel libs (tabpfn, tabicl, cubist,
   merf, Rbeast, sklearn-genetic-opt, aquacrop, pymupdf, …).
-- **git**: `octvi` (the fork carrying the GCVI Int32 fix) and `pygeoutil`.
+- **git**: `octvi` (the fork carrying the GCVI Int32 fix), `pygeoutil`, and
+  `tabpfn-gsa` (ruid7181/TabPFN-GSA — not on PyPI; backs geocif's
+  `model="tabpfn_gsa"`).
 
 > **octvi note:** the default `--octvi-git` is `ritviksahajpal/octvi`. Make sure
 > that fork has the GCVI Int32 fix; upstream `nasaharvest/octvi` does not, and an
