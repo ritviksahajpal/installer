@@ -11,11 +11,15 @@ environment on every platform.
 
 Supported platforms (auto-detected):
 
-| | Windows | UMD HPC (gsapp) | Generic / managed Linux | Linux ARM (aarch64) | macOS |
-|---|---|---|---|---|---|
-| GDAL / torch | conda-forge | conda-forge | conda-forge | conda-forge | conda-forge |
-| module load? | — | **no** | — | — | — |
-| special handling | — | cache → `/gpfs` | writable `TMPDIR` | ydf/treeple/rbeast handled | best-effort |
+| | Windows | UMD HPC (gsapp) | Generic / managed Linux | Linux ARM (aarch64) |
+|---|---|---|---|---|
+| GDAL / torch | conda-forge | conda-forge | conda-forge | conda-forge |
+| module load? | — | **no** | — | — |
+| special handling | — | cache → `/gpfs` | writable `TMPDIR` | ydf/treeple/rbeast handled |
+
+macOS is **not** a supported target: the generated workspace declares
+`linux-64`, `linux-aarch64` and `win-64` only. See the macOS tab under
+[Installing pixi](#installing-pixi).
 
 ---
 
@@ -40,7 +44,7 @@ First run downloads a few hundred MB (once; cached afterwards).
 ### Enter the environment
 
 ```bash
-# Linux / macOS / HPC
+# Linux / HPC
 source <install-base>/geo-stack/activate.sh        # drops you into `pixi shell`
 
 # Windows PowerShell
@@ -59,9 +63,96 @@ pixi run --manifest-path <install-base>/geo-stack/pixi.toml python -c "import ge
 |---|---|
 | UMD HPC | `/gpfs/data1/cmongp1/$USER` |
 | Windows | `%USERPROFILE%\geo-stack-env` |
-| Linux / macOS | `~/geo-stack-env` |
+| Linux | `~/geo-stack-env` |
 
 Override with `--install-base DIR`.
+
+---
+
+## Installing pixi
+
+`install.py` installs pixi for you when it isn't already on `PATH`, so you can
+normally skip this section. Do it by hand if you want pixi in place beforehand,
+or if the bootstrap failed.
+
+<details open>
+<summary><b>Linux</b> — including the UMD HPC and ARM / aarch64 boxes</summary>
+
+```bash
+curl -fsSL https://pixi.sh/install.sh | bash
+exec $SHELL                 # or: export PATH="$HOME/.pixi/bin:$PATH"
+pixi --version
+```
+
+Installs to `~/.pixi/bin` and appends the PATH line to your shell profile.
+
+**On the UMD HPC, redirect pixi off `/home` first** — it is quota'd, and a
+default install fails with `Disk quota exceeded`:
+
+```bash
+export PIXI_HOME=/gpfs/data1/cmongp1/$USER/.pixi-home
+export PIXI_CACHE_DIR=/gpfs/data1/cmongp1/$USER/.pixi-cache
+mkdir -p "$PIXI_HOME" "$PIXI_CACHE_DIR"
+curl -fsSL https://pixi.sh/install.sh | bash
+```
+
+`install.py` does exactly this on HPC hosts and bakes both exports into the
+generated `activate.sh`. On managed boxes that force a read-only `TMPDIR`
+(pixi's installer then dies with `mktemp ... Permission denied`), it also points
+`TMPDIR` at a writable directory first.
+
+</details>
+
+<details>
+<summary><b>Windows</b></summary>
+
+```powershell
+powershell -ExecutionPolicy ByPass -NoProfile -Command "irm -useb https://pixi.sh/install.ps1 | iex"
+```
+
+Installs to `%USERPROFILE%\.pixi\bin`. Open a new terminal, then:
+
+```powershell
+pixi --version
+```
+
+If `pixi` still isn't found, add it for the current session:
+
+```powershell
+$env:PATH = "$env:USERPROFILE\.pixi\bin;$env:PATH"
+```
+
+</details>
+
+<details>
+<summary><b>macOS</b></summary>
+
+```bash
+curl -fsSL https://pixi.sh/install.sh | bash
+exec $SHELL
+pixi --version
+```
+
+Works on both Apple Silicon (`osx-arm64`) and Intel (`osx-64`).
+
+> **`install.py` does not support macOS.** The workspace it generates declares
+> `linux-64`, `linux-aarch64` and `win-64` only, so `pixi install` stops with
+> *"The workspace does not support 'osx-arm64' on this machine."* pixi itself
+> installs fine — the environment does not. Open an issue if you need a Mac
+> build and the conda-forge deps can be checked against `osx-*`.
+
+</details>
+
+### Minimum version
+
+`install.py` requires **pixi ≥ 0.43.0** — the release that renamed the manifest's
+`[project]` table to `[workspace]`. An older pixi already on `PATH` fails on the
+generated manifest with an opaque parse error, so the installer checks first and
+stops with instructions. To upgrade:
+
+```bash
+pixi self-update
+```
 
 ---
 
@@ -91,7 +182,7 @@ On aarch64, three compiled backends are handled automatically:
 `sklearn-genetic-opt` are taken from PyPI (which has ARM wheels); `cubist`
 compiles from source with the box's gcc.
 
-### Windows / generic Linux / macOS
+### Windows / generic Linux
 Just `python install.py --yes`. pixi downloads its own Python 3.11 and all
 conda-forge binaries — nothing needs to pre-exist.
 
@@ -178,14 +269,6 @@ The generated `pixi.toml` pins the whole stack, validated to resolve across
 | Home quota fills during install | Handled on HPC (cache on `/gpfs`); elsewhere set `PIXI_CACHE_DIR=<big-disk>` |
 | `cubist` build fails on ARM | Report it — it can be gated off aarch64 like ydf/treeple were |
 | GCVI output looks wrong | You're on an unfixed octvi — use the fork with the Int32 fix |
-
----
-
-## Legacy installer
-
-`install_geo_environment.sh` is the previous **uv + Lmod-module + GDAL-source-build**
-HPC installer. It is superseded by this pixi `install.py` and kept only for
-historical reference. New installs should use `install.py`.
 
 ---
 
