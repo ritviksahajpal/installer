@@ -34,7 +34,9 @@ python install.py --yes
 `install.py` (stdlib-only, needs Python 3.8+ to bootstrap) will:
 
 1. Install pixi if it's not already on PATH.
-2. Write a validated `pixi.toml` into `<install-base>/geo-stack/`.
+2. Write a validated `pixi.toml` into `<install-base>/geo-stack/`
+   (see [Where it installs](#where-it-installs) — `<install-base>` defaults
+   per platform and is overridable).
 3. Run `pixi install` — conda-forge binaries + geocif/geoprepare from PyPI +
    octvi/pygeoutil from git + the PyPI-only ML libs.
 4. Write an `activate` helper and verify the imports.
@@ -57,15 +59,68 @@ Or run one-off commands without a subshell:
 pixi run --manifest-path <install-base>/geo-stack/pixi.toml python -c "import geocif"
 ```
 
-### Default install locations
+### Where it installs
 
-| Platform | `<install-base>` |
-|---|---|
-| UMD HPC | `/gpfs/data1/cmongp1/$USER` |
-| Windows | `%USERPROFILE%\geo-stack-env` |
-| Linux | `~/geo-stack-env` |
+`<install-base>` is the **parent** directory; the environment itself goes into a
+`geo-stack/` subdirectory inside it. `install.py` prints the resolved location as
+`Install dir:` in its banner before it does any work, so you always see exactly
+where things are going.
 
-Override with `--install-base DIR`.
+| Platform | Default `<install-base>` | Environment ends up in |
+|---|---|---|
+| UMD HPC | `/gpfs/data1/cmongp1/$USER` | `/gpfs/data1/cmongp1/$USER/geo-stack` |
+| Windows | `%USERPROFILE%\geo-stack-env` | `C:\Users\<you>\geo-stack-env\geo-stack` |
+| Linux | `~/geo-stack-env` | `~/geo-stack-env/geo-stack` |
+
+On the HPC that default applies only when `/gpfs/data1/cmongp1` actually exists;
+otherwise it falls back to `~/geo-stack-env`.
+
+What ends up on disk:
+
+```text
+<install-base>/
+├── geo-stack/                 <- everything the installer manages
+│   ├── pixi.toml              <- generated manifest (rewritten on every run)
+│   ├── pixi.lock              <- resolved versions
+│   ├── activate.sh            <- Linux/HPC (activate.ps1 + activate.bat on Windows)
+│   └── .pixi/envs/default/    <- the actual environment: python, gdal, geocif, ...
+├── .pixi-cache/               <- HPC only: pixi package cache, kept off the quota'd /home
+├── .pixi-home/                <- HPC only: the pixi binary itself
+└── .tmp/                      <- only created if pixi had to be installed here
+```
+
+Apart from that tree, the only things touched outside `<install-base>` come from
+pixi's own bootstrap the first time it runs: the pixi binary (`~/.pixi/bin`, or
+`.pixi-home/` on the HPC) and a PATH line appended to your shell profile.
+
+### Choosing a different location
+
+Override the parent directory with `--install-base DIR`:
+
+```bash
+# HPC: put it in a project subdirectory instead of your $USER root
+python install.py --install-base /gpfs/data1/cmongp1/$USER/envs --yes
+#   -> /gpfs/data1/cmongp1/$USER/envs/geo-stack
+
+# a big local disk rather than $HOME
+python install.py --install-base /data/envs --yes
+#   -> /data/envs/geo-stack
+
+# right here, in the current directory
+python install.py --install-base . --yes
+#   -> ./geo-stack
+```
+
+```powershell
+# Windows: a different drive
+python install.py --install-base D:\envs --yes
+#   -> D:\envs\geo-stack
+```
+
+The path is expanded and resolved before use, so `~`, relative paths, and
+shell-expanded variables like `$USER` all work. The directory is created if it
+doesn't exist. Re-running with the same `--install-base` is safe — the manifest
+is rewritten and the environment updated in place, not duplicated.
 
 ---
 
@@ -169,7 +224,7 @@ python install.py --yes
   off the quota'd `/home`).
 - No `module load` — conda-forge's libgdal replaces `rh9/gdal/3.11.0`.
 
-### Managed Linux / Jupyter boxes (e.g. AWS "terrahub", often ARM)
+### Managed Linux / Jupyter boxes (e.g. AWS, often ARM)
 These frequently force `TMPDIR` to a read-only path, which breaks pixi's own
 installer (`mktemp ... Permission denied`). `install.py` sets a writable
 `TMPDIR` (`<install-base>/.tmp`) before installing pixi, so it just works. If
