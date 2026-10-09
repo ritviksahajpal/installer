@@ -23,17 +23,53 @@ macOS is **not** a supported target: the generated workspace declares
 
 ---
 
+## Prerequisites
+
+You need Python, pixi and git. Check what you already have:
+
+```bash
+python --version    # 3.8 or newer (`python3` on many Linux boxes, `py` on Windows)
+pixi --version      # 0.43.0 or newer
+git --version
+```
+
+Install anything that is missing, then open a new terminal so it is on `PATH`:
+
+| | Windows | Linux / UMD HPC |
+|---|---|---|
+| **Python 3.8+** | `winget install -e --id Python.Python.3.12`, or the [python.org](https://www.python.org/downloads/) installer with **Add python.exe to PATH** ticked | Usually present as `python3` (the UMD HPC has 3.9). Otherwise `sudo apt install python3` or `sudo dnf install python3` |
+| **pixi 0.43+** | [Installing pixi → Windows](#installing-pixi) | [Installing pixi → Linux](#installing-pixi). On the UMD HPC, set `PIXI_HOME` and `PIXI_CACHE_DIR` first, as shown there |
+| **git** | `winget install -e --id Git.Git` | `sudo apt install git` or `sudo dnf install git` (already on the HPC) |
+
+The Python here only runs `install.py`, which needs nothing beyond the standard
+library. The environment itself gets its own Python 3.11 from conda-forge. If
+you have pixi but no Python, pixi can supply one for this single command:
+
+```bash
+pixi exec --spec python=3.11 -- python install.py --yes
+```
+
+> **Windows:** if `python` opens the Microsoft Store or prints *"Python was not
+> found"*, that is the Store's placeholder alias, not a real Python. Install
+> Python as above, or turn the alias off under *Settings → Apps → Advanced app
+> settings → App execution aliases*.
+
+---
+
 ## Quick start
+
+With the [prerequisites](#prerequisites) in place:
 
 ```bash
 git clone https://github.com/ritviksahajpal/installer.git
 cd installer
-python install.py --yes
+python install.py --yes      # or python3 / py, whichever runs Python 3.8+
 ```
 
-`install.py` (stdlib-only, needs Python 3.8+ to bootstrap) will:
+`install.py` (stdlib-only) will:
 
-1. Install pixi if it's not already on PATH.
+1. Use the pixi on your `PATH`. If it finds none, it tries to install pixi
+   itself, but installing it beforehand is more reliable.
 2. Write a validated `pixi.toml` into `<install-base>/geo-stack/`
    (see [Where it installs](#where-it-installs) — `<install-base>` defaults
    per platform and is overridable).
@@ -126,9 +162,9 @@ is rewritten and the environment updated in place, not duplicated.
 
 ## Installing pixi
 
-`install.py` installs pixi for you when it isn't already on `PATH`, so you can
-normally skip this section. Do it by hand if you want pixi in place beforehand,
-or if the bootstrap failed.
+Install pixi before running `install.py` if `pixi --version` doesn't work, or
+if it reports a version older than 0.43.0. As a fallback, `install.py` runs
+these same commands itself when it finds no pixi at all.
 
 <details open>
 <summary><b>Linux</b> — including the UMD HPC and ARM / aarch64 boxes</summary>
@@ -215,7 +251,7 @@ pixi self-update
 
 ### UMD HPC (gsapp)
 ```bash
-ssh gsapp
+ssh <hpc-username>@gsapp18.umd.edu   # any gsapp node; needs the UMD VPN
 cd /gpfs/data1/cmongp1/$USER
 git clone https://github.com/ritviksahajpal/installer.git && cd installer
 python install.py --yes
@@ -238,8 +274,9 @@ On aarch64, three compiled backends are handled automatically:
 compiles from source with the box's gcc.
 
 ### Windows / generic Linux
-Just `python install.py --yes`. pixi downloads its own Python 3.11 and all
-conda-forge binaries — nothing needs to pre-exist.
+Install the [prerequisites](#prerequisites), then `python install.py --yes`.
+pixi downloads the environment's own Python 3.11 and all conda-forge binaries;
+only Python 3.8+ (to run the installer), pixi and git must exist beforehand.
 
 ---
 
@@ -303,7 +340,8 @@ The generated `pixi.toml` pins the whole stack, validated to resolve across
   clients (cdsapi, pymodis, earthaccess, pydap).
 - **PyPI** (`[pypi-dependencies]`): `geocif` (≥0.4.933) and `geoprepare`
   (≥0.6.286), plus PyPI-only / no-conda-ARM-wheel libs (tabpfn, tabicl, cubist,
-  merf, Rbeast, sklearn-genetic-opt, aquacrop, pymupdf, …).
+  merf, Rbeast, sklearn-genetic-opt, aquacrop, pybass-emu (pyBASS, backs
+  geocif's `model="bass"`), pymupdf, …).
 - **git**: `octvi` (the fork carrying the GCVI Int32 fix), `pygeoutil`, and
   `tabpfn-gsa` (ruid7181/TabPFN-GSA — not on PyPI; backs geocif's
   `model="tabpfn_gsa"`).
@@ -322,6 +360,7 @@ The generated `pixi.toml` pins the whole stack, validated to resolve across
 | `pixi: command not found` after install | `export PATH="$HOME/.pixi/bin:$PATH"` (add to `~/.bashrc`) |
 | `libcurl.so.4: no version information available` | Harmless warning from a base-conda libcurl — ignore |
 | Home quota fills during install | Handled on HPC (cache on `/gpfs`); elsewhere set `PIXI_CACHE_DIR=<big-disk>` |
+| Windows: `No such file or directory: 'build\bdist.win-amd64\…'` while building a package (e.g. PyGRF) | The build path passed Windows' 260-character limit. Keep `PIXI_CACHE_DIR` short (e.g. `D:\pixi-cache`) or enable long paths (admin: `LongPathsEnabled=1`) and re-run |
 | `cubist` build fails on ARM | Report it — it can be gated off aarch64 like ydf/treeple were |
 | GCVI output looks wrong | You're on an unfixed octvi — use the fork with the Int32 fix |
 

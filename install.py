@@ -328,6 +328,10 @@ wget = "*"
 Rbeast = ">=0.1.20"              # no conda-forge aarch64 build; PyPI ships aarch64 wheels
 sklearn-genetic-opt = ">=0.10"  # conda recipe stuck on py3.12/tensorflow; take from PyPI
 aquacrop = ">=3.0"
+# LANL pyBASS (Bayesian MARS), published on PyPI as pybass-emu but imported as
+# `pyBASS`. Backs geocif's model="bass", which is in the training config's
+# default models list; geocif leaves it out of its own deps, so it must be here.
+pybass-emu = ">=0.9"
 pymupdf = ">=1.23"
 pdfplumber = ">=0.10"
 """
