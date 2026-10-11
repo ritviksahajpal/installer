@@ -339,9 +339,11 @@ pymupdf = ">=1.23"
 pdfplumber = ">=0.10"
 """
 
-# geocif <=0.4.932 still depends on the deleted pyeogpr, so no such release can
-# ever resolve; 0.4.933 is the first one without it and is therefore the floor.
-GEOCIF_MIN = "0.4.933"
+# geocif <=0.4.932 still depends on the deleted pyeogpr and can never resolve.
+# Releases before 0.4.1078 also break [ML] spatial_autocorrelation under pysal
+# 26.1 (`from pysal.lib import weights`) and lack the pybass-emu dep, so
+# 0.4.1078, the first release with both fixed, is the floor.
+GEOCIF_MIN = "0.4.1078"
 GEOPREPARE_MIN = "0.6.286"
 
 DEFAULT_OCTVI_GIT = "https://github.com/ritviksahajpal/octvi.git"

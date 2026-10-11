@@ -338,7 +338,7 @@ The generated `pixi.toml` pins the whole stack, validated to resolve across
   + PyGMT (so geocif's pygmt plot backend renders in-process), openpyxl (pandas'
   .xlsx engine), the dashboard/gee/spatial/narrative extras, and download
   clients (cdsapi, pymodis, earthaccess, pydap).
-- **PyPI** (`[pypi-dependencies]`): `geocif` (≥0.4.933) and `geoprepare`
+- **PyPI** (`[pypi-dependencies]`): `geocif` (≥0.4.1078) and `geoprepare`
   (≥0.6.286), plus PyPI-only / no-conda-ARM-wheel libs (tabpfn, tabicl, cubist,
   merf, Rbeast, sklearn-genetic-opt, aquacrop, pybass-emu (pyBASS, backs
   geocif's `model="bass"`), geoextract-gee (the Earth Engine backend behind
