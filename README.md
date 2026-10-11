@@ -341,7 +341,8 @@ The generated `pixi.toml` pins the whole stack, validated to resolve across
 - **PyPI** (`[pypi-dependencies]`): `geocif` (≥0.4.933) and `geoprepare`
   (≥0.6.286), plus PyPI-only / no-conda-ARM-wheel libs (tabpfn, tabicl, cubist,
   merf, Rbeast, sklearn-genetic-opt, aquacrop, pybass-emu (pyBASS, backs
-  geocif's `model="bass"`), pymupdf, …).
+  geocif's `model="bass"`), geoextract-gee (the Earth Engine backend behind
+  geoprepare's `use_gee = True`), pymupdf, …).
 - **git**: `octvi` (the fork carrying the GCVI Int32 fix), `pygeoutil`, and
   `tabpfn-gsa` (ruid7181/TabPFN-GSA — not on PyPI; backs geocif's
   `model="tabpfn_gsa"`).

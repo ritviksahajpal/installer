@@ -332,6 +332,9 @@ aquacrop = ">=3.0"
 # `pyBASS`. Backs geocif's model="bass", which is in the training config's
 # default models list; geocif leaves it out of its own deps, so it must be here.
 pybass-emu = ">=0.9"
+# Google Earth Engine backend for geoprepare's geoextract ([DEFAULT] use_gee =
+# True); imports as geoextract_gee. geoprepare does not depend on it.
+geoextract-gee = ">=0.2.0"
 pymupdf = ">=1.23"
 pdfplumber = ">=0.10"
 """
