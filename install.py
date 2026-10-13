@@ -351,6 +351,13 @@ PYGEOUTIL_GIT = "https://github.com/ritviksahajpal/pygeoutil.git"
 # TabPFN-GSA (geospatial sparse attention for TabPFN) is not on PyPI at all;
 # it backs geocif's model="tabpfn_gsa" and imports as `tabpfn_gsa`.
 TABPFN_GSA_GIT = "https://github.com/ruid7181/TabPFN-GSA.git"
+# NVIDIA structured-data-models (imports as `sdm`) runs the Kumo-Tabular
+# foundation model behind geocif's model="kumo". Not on PyPI. Pinned to a
+# release tag because the project is alpha and main moves daily. The weights
+# (nvidia/Kumo-Tabular, OpenMDW 1.1, not gated) download from Hugging Face on
+# first use, so point HF_HOME at a big disk on quota'd hosts.
+SDM_GIT = "https://github.com/NVIDIA/structured-data-models.git"
+SDM_TAG = "v0.2.0rc2"
 
 
 def _pkg_line(name: str, editable_path: str | None, pypi_spec: str) -> str:
@@ -389,6 +396,7 @@ def render_pixi_toml(
         + f"{octvi}\n"
         + f'pygeoutil = {{ git = "{PYGEOUTIL_GIT}" }}\n'
         + f'tabpfn-gsa = {{ git = "{TABPFN_GSA_GIT}" }}\n'
+        + f'structured-data-models = {{ git = "{SDM_GIT}", tag = "{SDM_TAG}" }}\n'
         + _PYPI_ONLY
     )
 

@@ -343,9 +343,13 @@ The generated `pixi.toml` pins the whole stack, validated to resolve across
   merf, Rbeast, sklearn-genetic-opt, aquacrop, pybass-emu (pyBASS, backs
   geocif's `model="bass"`), geoextract-gee (the Earth Engine backend behind
   geoprepare's `use_gee = True`), pymupdf, …).
-- **git**: `octvi` (the fork carrying the GCVI Int32 fix), `pygeoutil`, and
+- **git**: `octvi` (the fork carrying the GCVI Int32 fix), `pygeoutil`,
   `tabpfn-gsa` (ruid7181/TabPFN-GSA — not on PyPI; backs geocif's
-  `model="tabpfn_gsa"`).
+  `model="tabpfn_gsa"`), and `structured-data-models` (NVIDIA, imports as
+  `sdm`, pinned to tag `v0.2.0rc2`; runs the
+  [Kumo-Tabular](https://huggingface.co/nvidia/Kumo-Tabular) model behind
+  geocif's `model="kumo"`). Kumo's weights download from Hugging Face on first
+  use; on the HPC set `HF_HOME` to a `/gpfs` path so they stay off `/home`.
 
 > **octvi note:** the default `--octvi-git` is `ritviksahajpal/octvi`. Make sure
 > that fork has the GCVI Int32 fix; upstream `nasaharvest/octvi` does not, and an
