@@ -515,11 +515,38 @@ def verify(pixi: str, install_dir: pathlib.Path, env: dict) -> None:
 
 # -------- Defaults / CLI --------
 
+def _owned_dirs(parent: pathlib.Path) -> list[str]:
+    """Top-level directories under parent owned by the current user."""
+    if not hasattr(os, "getuid"):
+        return []
+    uid = os.getuid()
+    try:
+        return sorted(p.name for p in parent.iterdir()
+                      if p.is_dir() and p.stat().st_uid == uid)
+    except OSError:
+        return []
+
+
 def default_install_base(platform: str) -> pathlib.Path:
-    if platform == "umd_hpc":
-        gpfs_user = UMD_HPC_MARKER / os.environ.get("USER", "")
-        if gpfs_user.parent.exists():
+    if platform == "umd_hpc" and UMD_HPC_MARKER.exists():
+        # Folders under cmongp1 are named by people, not always by login (e.g.
+        # login ritviks works in .../ritvik), so never invent one: a default of
+        # .../$USER that doesn't exist would scatter a new, empty folder next
+        # to the real one. Use it only if it is already there.
+        user = os.environ.get("USER", "")
+        gpfs_user = UMD_HPC_MARKER / user
+        if user and gpfs_user.is_dir():
             return gpfs_user
+        owned = _owned_dirs(UMD_HPC_MARKER)
+        hint = (f"Folders there that you own: {', '.join(owned)}\n" if owned else "")
+        problem = (f"No folder named {gpfs_user} on the HPC" if user
+                   else "$USER is not set, so there is no default folder")
+        raise SystemExit(
+            f"{problem}, and the installer won't create one.\n"
+            f"Point it at your folder under {UMD_HPC_MARKER}:\n"
+            f"{hint}"
+            f"  python install.py --install-base {UMD_HPC_MARKER}/<your-folder> --yes"
+        )
     if platform == "windows":
         return pathlib.Path(os.environ.get("USERPROFILE", "C:\\")) / "geo-stack-env"
     return pathlib.Path.home() / "geo-stack-env"

@@ -104,12 +104,16 @@ where things are going.
 
 | Platform | Default `<install-base>` | Environment ends up in |
 |---|---|---|
-| UMD HPC | `/gpfs/data1/cmongp1/$USER` | `/gpfs/data1/cmongp1/$USER/geo-stack` |
+| UMD HPC | `/gpfs/data1/cmongp1/$USER`, only if it exists (see below) | `/gpfs/data1/cmongp1/$USER/geo-stack` |
 | Windows | `%USERPROFILE%\geo-stack-env` | `C:\Users\<you>\geo-stack-env\geo-stack` |
 | Linux | `~/geo-stack-env` | `~/geo-stack-env/geo-stack` |
 
-On the HPC that default applies only when `/gpfs/data1/cmongp1` actually exists;
-otherwise it falls back to `~/geo-stack-env`.
+On the HPC, folders under `/gpfs/data1/cmongp1` are named by people, not
+always by login (login `ritviks` works in `.../ritvik`). So the installer uses
+`/gpfs/data1/cmongp1/$USER` only if that folder **already exists**. If it
+doesn't, the installer stops before creating anything, lists the folders there
+that you own, and asks you to rerun with `--install-base`. On a machine
+without `/gpfs/data1/cmongp1` it falls back to `~/geo-stack-env`.
 
 What ends up on disk:
 
@@ -148,9 +152,9 @@ pixi's own bootstrap the first time it runs: the pixi binary (`~/.pixi/bin`, or
 Override the parent directory with `--install-base DIR`:
 
 ```bash
-# HPC: put it in a project subdirectory instead of your $USER root
-python install.py --install-base /gpfs/data1/cmongp1/$USER/envs --yes
-#   -> /gpfs/data1/cmongp1/$USER/envs/geo-stack
+# HPC: your folder under cmongp1, when it isn't named after your login
+python install.py --install-base /gpfs/data1/cmongp1/<your-folder> --yes
+#   -> /gpfs/data1/cmongp1/<your-folder>/geo-stack
 
 # a big local disk rather than $HOME
 python install.py --install-base /data/envs --yes
@@ -266,10 +270,12 @@ pixi self-update
 ### UMD HPC (gsapp)
 ```bash
 ssh <hpc-username>@gsapp18.umd.edu   # any gsapp node; needs the UMD VPN
-cd /gpfs/data1/cmongp1/$USER
+cd /gpfs/data1/cmongp1/<your-folder>   # often your login, but not always
 git clone https://github.com/ritviksahajpal/installer.git && cd installer
-python install.py --yes
+python install.py --install-base /gpfs/data1/cmongp1/<your-folder> --yes
 ```
+- `--install-base` can be left out only if your folder is named exactly after
+  your login (`$USER`); otherwise the installer stops and asks for it.
 - The pixi package cache is redirected to `<install-base>/.pixi-cache` (keeps it
   off the quota'd `/home`).
 - No `module load` — conda-forge's libgdal replaces `rh9/gdal/3.11.0`.
