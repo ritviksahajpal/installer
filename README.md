@@ -127,24 +127,35 @@ What ends up on disk:
 │   ├── pixi.lock              <- resolved versions
 │   ├── activate.sh            <- Linux/HPC (activate.ps1 + activate.bat on Windows)
 │   └── .pixi/envs/default/    <- the actual environment: python, gdal, geocif, ...
-├── hf_cache/                  <- Hugging Face model weights (TabPFN, Kumo, ...), see below
+├── hf_cache/                  <- Hugging Face model weights (Kumo-Tabular, TabICL), see below
+├── tabpfn_cache/              <- TabPFN model weights, see below
 ├── .pixi-cache/               <- HPC only: pixi package cache, kept off the quota'd /home
 ├── .pixi-home/                <- HPC only: the pixi binary itself
 └── .tmp/                      <- only created if pixi had to be installed here
 ```
 
-**Model weights.** geocif's foundation models (TabPFN, Kumo-Tabular, ...)
-download their weights from Hugging Face on first use, often a GB or more. The
-installer sets `HF_HUB_CACHE=<install-base>/hf_cache` in the environment (in
-`pixi.toml`'s `[activation.env]`, so every `pixi run`, `pixi shell` and
-`activate` script gets it), which keeps them off a small or quota'd home. Pass
-`--hf-cache DIR` to put them elsewhere. If `HF_HOME` or `HF_HUB_CACHE` is
-already set when you run the installer, it leaves that alone. pixi applies the
-value even over an `HF_HUB_CACHE` exported later in your shell, so to move the
-cache, re-run the installer with `--hf-cache`. It sets
-`HF_HUB_CACHE` rather than `HF_HOME` because `HF_HOME` also holds your Hugging
-Face login token, and moving it would hide an existing login from gated
-downloads.
+**Model weights.** geocif's foundation models download their weights on first
+use, often a GB or more, so the installer keeps them off a small or quota'd
+home. It sets two variables in `pixi.toml`'s `[activation.env]`, which every
+`pixi run`, `pixi shell` and `activate` script applies:
+
+| Model | Variable | Default location |
+|---|---|---|
+| Kumo-Tabular, TabICL (plain Hugging Face downloads) | `HF_HUB_CACHE` | `<install-base>/hf_cache` |
+| TabPFN (its own cache; ignores `HF_HUB_CACHE`) | `TABPFN_MODEL_CACHE_DIR` | `<install-base>/tabpfn_cache` |
+
+Pass `--hf-cache DIR` to move both (TabPFN's goes in a `tabpfn_cache` folder
+next to it). If `HF_HOME` or `HF_HUB_CACHE` (or `TABPFN_MODEL_CACHE_DIR`) is
+already set when you run the installer, it leaves that one alone. pixi applies
+the values even over ones exported later in your shell, so to move a cache,
+re-run the installer with `--hf-cache`. It sets `HF_HUB_CACHE` rather than
+`HF_HOME` because `HF_HOME` also holds your Hugging Face login token, and
+moving it would hide an existing login from gated downloads.
+
+TabPFN's login token is the one thing that stays in your home: the library
+hard-codes `~/.cache/tabpfn/auth_token` (tiny, and per host on the HPC). On a
+headless host, accept the licence once from a machine with a browser, or export
+`TABPFN_TOKEN` instead.
 
 Apart from that tree, the only things touched outside `<install-base>` come from
 pixi's own bootstrap the first time it runs: the pixi binary (`~/.pixi/bin`, or
@@ -332,7 +343,8 @@ Edits in those repos are live immediately (no reinstall). Anything not passed
                              (default: https://github.com/ritviksahajpal/octvi.git).
 --hf-cache DIR             Hugging Face model cache, set as HF_HUB_CACHE in the env
                              (default: <install-base>/hf_cache, unless HF_HOME or
-                             HF_HUB_CACHE is already set).
+                             HF_HUB_CACHE is already set). TabPFN's
+                             TABPFN_MODEL_CACHE_DIR goes next to it as tabpfn_cache.
 --platform NAME            Override detection: windows|umd_hpc|linux|macos|auto.
 --yes / -y                 Skip the confirmation prompt (required for batch jobs).
 ```

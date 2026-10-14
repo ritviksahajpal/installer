@@ -391,18 +391,27 @@ def render_pixi_toml(
     editable_octvi: str | None,
     octvi_git: str,
     hf_cache: pathlib.Path | None = None,
+    tabpfn_cache: pathlib.Path | None = None,
 ) -> str:
     geoprepare = _pkg_line("geoprepare", editable_geoprepare, f'">={GEOPREPARE_MIN}"')
-    activation = ""
+    # as_posix() keeps Windows backslashes out of TOML strings.
+    env_lines = []
     if hf_cache:
         # HF_HUB_CACHE, not HF_HOME: HF_HOME also holds the Hugging Face login
-        # token, and moving it would hide an existing login from the gated
-        # TabPFN downloads. as_posix() keeps Windows backslashes out of TOML.
+        # token, and moving it would hide an existing login from gated
+        # downloads. Covers Kumo-Tabular and TabICL (plain hf_hub_download).
+        env_lines.append(f'HF_HUB_CACHE = "{hf_cache.as_posix()}"')
+    if tabpfn_cache:
+        # TabPFN ignores HF_HUB_CACHE: it downloads with
+        # hf_hub_download(local_dir=<its own cache>), ~/.cache/tabpfn by default.
+        env_lines.append(f'TABPFN_MODEL_CACHE_DIR = "{tabpfn_cache.as_posix()}"')
+    activation = ""
+    if env_lines:
         activation = (
             "\n# Set by pixi on every `pixi run` / `pixi shell`: model weights\n"
-            "# (TabPFN, Kumo-Tabular, ...) download here, not into ~/.cache.\n"
-            "[activation.env]\n"
-            f'HF_HUB_CACHE = "{hf_cache.as_posix()}"\n'
+            "# (Kumo-Tabular, TabICL via the HF cache; TabPFN via its own) download\n"
+            "# here, not into ~/.cache.\n"
+            "[activation.env]\n" + "\n".join(env_lines) + "\n"
         )
     geocif = _pkg_line("geocif", editable_geocif, f'">={GEOCIF_MIN}"')
     if editable_octvi:
@@ -450,6 +459,23 @@ def resolve_hf_cache(requested: pathlib.Path | None,
         if current and pathlib.Path(current).expanduser().resolve() != default:
             info(f"{var} is already set ({current}); leaving the Hugging Face cache alone.")
             return None
+    return default
+
+
+def resolve_tabpfn_cache(hf_cache: pathlib.Path | None,
+                         install_base: pathlib.Path) -> pathlib.Path | None:
+    """Where TabPFN's own weight cache should go, or None to leave it alone.
+
+    Sits next to the Hugging Face cache (so --hf-cache moves both), else under
+    <install-base>. A TABPFN_MODEL_CACHE_DIR you already set wins, unless it is
+    the value this installer set on an earlier run. The TabPFN login token still
+    lives in ~/.cache/tabpfn (hard-coded by the library; TABPFN_TOKEN overrides).
+    """
+    default = (hf_cache.parent if hf_cache else install_base) / "tabpfn_cache"
+    current = os.environ.get("TABPFN_MODEL_CACHE_DIR")
+    if current and pathlib.Path(current).expanduser().resolve() != default:
+        info(f"TABPFN_MODEL_CACHE_DIR is already set ({current}); leaving it alone.")
+        return None
     return default
 
 
@@ -623,6 +649,7 @@ def main() -> None:
     install_base = (args.install_base or default_install_base(platform)).expanduser().resolve()
     install_dir = install_base / "geo-stack"
     hf_cache = resolve_hf_cache(args.hf_cache, install_base)
+    tabpfn_cache = resolve_tabpfn_cache(hf_cache, install_base)
 
     print("=" * 60)
     print(f"Platform:       {platform}  (conda subdir: {pixi_platform()})")
@@ -631,6 +658,7 @@ def main() -> None:
     print(f"geoprepare:     {args.editable_geoprepare or f'(PyPI >={GEOPREPARE_MIN})'}")
     print(f"octvi:          {args.editable_octvi or args.octvi_git}")
     print(f"HF model cache: {hf_cache or '(your existing HF_HOME / HF_HUB_CACHE)'}")
+    print(f"TabPFN weights: {tabpfn_cache or '(your existing TABPFN_MODEL_CACHE_DIR)'}")
     print("=" * 60)
     if not args.yes:
         if input("Continue? [y/N] ").strip().lower() not in ("y", "yes"):
@@ -664,6 +692,7 @@ def main() -> None:
         editable_octvi=args.editable_octvi,
         octvi_git=args.octvi_git,
         hf_cache=hf_cache,
+        tabpfn_cache=tabpfn_cache,
     )
     (install_dir / "pixi.toml").write_text(toml, encoding="utf-8")
     ok(f"Wrote {install_dir / 'pixi.toml'}")
