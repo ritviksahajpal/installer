@@ -66,12 +66,30 @@ def info(msg: str) -> None:
 
 # -------- Platform detection --------
 
-UMD_HPC_MARKER = pathlib.Path("/gpfs/data1/cmongp1")
+# Group trees on the shared GPFS. Each is ACL-protected to its own group, and a
+# user can belong to one or several, so a cmongp2-only user cannot enter cmongp1
+# (though both directories still *exist*, so existence alone proves nothing).
+UMD_HPC_ROOTS = (
+    pathlib.Path("/gpfs/data1/cmongp1"),
+    pathlib.Path("/gpfs/data1/cmongp2"),
+)
+
+
+def _is_dir(path: pathlib.Path) -> bool:
+    """Path.is_dir() that treats "may not look inside" as "no".
+
+    Before Python 3.13, is_dir() raises PermissionError when a parent directory
+    isn't searchable, which is exactly the cmongp2-user-under-cmongp1 case.
+    """
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
 
 
 def is_umd_hpc() -> bool:
     has_lmod = bool(os.environ.get("LMOD_CMD")) or bool(shutil.which("lmod"))
-    return has_lmod and UMD_HPC_MARKER.exists()
+    return has_lmod and any(_is_dir(r) for r in UMD_HPC_ROOTS)
 
 
 def detect_platform() -> str:
@@ -516,36 +534,56 @@ def verify(pixi: str, install_dir: pathlib.Path, env: dict) -> None:
 # -------- Defaults / CLI --------
 
 def _owned_dirs(parent: pathlib.Path) -> list[str]:
-    """Top-level directories under parent owned by the current user."""
+    """Top-level directories under parent owned by the current user.
+
+    Empty when parent can't be listed (e.g. another group's tree).
+    """
     if not hasattr(os, "getuid"):
         return []
     uid = os.getuid()
     try:
-        return sorted(p.name for p in parent.iterdir()
-                      if p.is_dir() and p.stat().st_uid == uid)
+        entries = list(os.scandir(parent))
     except OSError:
         return []
+    owned = []
+    for entry in entries:
+        try:
+            if entry.is_dir() and entry.stat().st_uid == uid:
+                owned.append(entry.name)
+        except OSError:
+            continue
+    return sorted(owned)
 
 
 def default_install_base(platform: str) -> pathlib.Path:
-    if platform == "umd_hpc" and UMD_HPC_MARKER.exists():
-        # Folders under cmongp1 are named by people, not always by login (e.g.
-        # login ritviks works in .../ritvik), so never invent one: a default of
-        # .../$USER that doesn't exist would scatter a new, empty folder next
-        # to the real one. Use it only if it is already there.
+    roots = [r for r in UMD_HPC_ROOTS if _is_dir(r)]
+    if platform == "umd_hpc" and roots:
+        # Folders under a group tree are named by people, not always by login
+        # (e.g. login ritviks works in .../cmongp1/ritvik), so never invent
+        # one: a default of <root>/$USER that doesn't exist would scatter a
+        # new, empty folder next to the real one. Use it only if it is there,
+        # under exactly one group tree (a user may be in several).
         user = os.environ.get("USER", "")
-        gpfs_user = UMD_HPC_MARKER / user
-        if user and gpfs_user.is_dir():
-            return gpfs_user
-        owned = _owned_dirs(UMD_HPC_MARKER)
-        hint = (f"Folders there that you own: {', '.join(owned)}\n" if owned else "")
-        problem = (f"No folder named {gpfs_user} on the HPC" if user
-                   else "$USER is not set, so there is no default folder")
+        mine = [r / user for r in roots if user and _is_dir(r / user)]
+        if len(mine) == 1:
+            return mine[0]
+        if mine:
+            problem = ("There is a folder named " + user + " under more than one "
+                       "group directory (" + ", ".join(str(p) for p in mine) + ")")
+        elif user:
+            problem = f"No folder named {user} under " + " or ".join(str(r) for r in roots)
+        else:
+            problem = "$USER is not set, so there is no default folder"
+        listing = "".join(
+            f"  {r}: " + (", ".join(_owned_dirs(r)) or "(none you own, or not readable by you)") + "\n"
+            for r in roots
+        )
         raise SystemExit(
             f"{problem}, and the installer won't create one.\n"
-            f"Point it at your folder under {UMD_HPC_MARKER}:\n"
-            f"{hint}"
-            f"  python install.py --install-base {UMD_HPC_MARKER}/<your-folder> --yes"
+            "Folders you own, per group directory (you can only enter your own group's):\n"
+            f"{listing}"
+            "Point the installer at yours:\n"
+            "  python install.py --install-base <group-directory>/<your-folder> --yes"
         )
     if platform == "windows":
         return pathlib.Path(os.environ.get("USERPROFILE", "C:\\")) / "geo-stack-env"

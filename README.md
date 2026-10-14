@@ -104,16 +104,19 @@ where things are going.
 
 | Platform | Default `<install-base>` | Environment ends up in |
 |---|---|---|
-| UMD HPC | `/gpfs/data1/cmongp1/$USER`, only if it exists (see below) | `/gpfs/data1/cmongp1/$USER/geo-stack` |
+| UMD HPC | `/gpfs/data1/cmongp1/$USER` or `/gpfs/data1/cmongp2/$USER`, only if it exists (see below) | `<that folder>/geo-stack` |
 | Windows | `%USERPROFILE%\geo-stack-env` | `C:\Users\<you>\geo-stack-env\geo-stack` |
 | Linux | `~/geo-stack-env` | `~/geo-stack-env/geo-stack` |
 
-On the HPC, folders under `/gpfs/data1/cmongp1` are named by people, not
-always by login (login `ritviks` works in `.../ritvik`). So the installer uses
-`/gpfs/data1/cmongp1/$USER` only if that folder **already exists**. If it
-doesn't, the installer stops before creating anything, lists the folders there
-that you own, and asks you to rerun with `--install-base`. On a machine
-without `/gpfs/data1/cmongp1` it falls back to `~/geo-stack-env`.
+On the HPC your files live in one of two group directories, `cmongp1` or
+`cmongp2`, and you can normally enter only your own group's (some people are in
+both). Folders inside them are named by people, not always by login (login
+`ritviks` works in `.../cmongp1/ritvik`). So the installer uses
+`<group-directory>/$USER` only if that folder **already exists**, in exactly
+one of the two. Otherwise (none found, or a folder of that name in both) it
+stops before creating anything, lists the folders you own in each group
+directory, and asks you to rerun with `--install-base`. On a machine with
+neither directory it falls back to `~/geo-stack-env`.
 
 What ends up on disk:
 
@@ -152,9 +155,9 @@ pixi's own bootstrap the first time it runs: the pixi binary (`~/.pixi/bin`, or
 Override the parent directory with `--install-base DIR`:
 
 ```bash
-# HPC: your folder under cmongp1, when it isn't named after your login
-python install.py --install-base /gpfs/data1/cmongp1/<your-folder> --yes
-#   -> /gpfs/data1/cmongp1/<your-folder>/geo-stack
+# HPC: your folder under cmongp1 or cmongp2, when it isn't named after your login
+python install.py --install-base /gpfs/data1/cmongp2/<your-folder> --yes
+#   -> /gpfs/data1/cmongp2/<your-folder>/geo-stack
 
 # a big local disk rather than $HOME
 python install.py --install-base /data/envs --yes
@@ -199,8 +202,8 @@ Installs to `~/.pixi/bin` and appends the PATH line to your shell profile.
 default install fails with `Disk quota exceeded`:
 
 ```bash
-export PIXI_HOME=/gpfs/data1/cmongp1/$USER/.pixi-home
-export PIXI_CACHE_DIR=/gpfs/data1/cmongp1/$USER/.pixi-cache
+export PIXI_HOME=<install-base>/.pixi-home        # e.g. /gpfs/data1/cmongp2/<your-folder>
+export PIXI_CACHE_DIR=<install-base>/.pixi-cache
 mkdir -p "$PIXI_HOME" "$PIXI_CACHE_DIR"
 curl -fsSL https://pixi.sh/install.sh | bash
 ```
@@ -270,12 +273,13 @@ pixi self-update
 ### UMD HPC (gsapp)
 ```bash
 ssh <hpc-username>@gsapp18.umd.edu   # any gsapp node; needs the UMD VPN
-cd /gpfs/data1/cmongp1/<your-folder>   # often your login, but not always
+cd /gpfs/data1/<cmongp1-or-cmongp2>/<your-folder>   # your group's directory; the folder is often your login, but not always
 git clone https://github.com/ritviksahajpal/installer.git && cd installer
-python install.py --install-base /gpfs/data1/cmongp1/<your-folder> --yes
+python install.py --install-base /gpfs/data1/<cmongp1-or-cmongp2>/<your-folder> --yes
 ```
 - `--install-base` can be left out only if your folder is named exactly after
-  your login (`$USER`); otherwise the installer stops and asks for it.
+  your login (`$USER`) under `cmongp1` or `cmongp2`; otherwise the installer
+  stops, lists the folders you own in each, and asks for it.
 - The pixi package cache is redirected to `<install-base>/.pixi-cache` (keeps it
   off the quota'd `/home`).
 - No `module load` — conda-forge's libgdal replaces `rh9/gdal/3.11.0`.
