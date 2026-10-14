@@ -15,7 +15,7 @@ so one `pixi install` does the whole job on Windows, Linux x86-64, Linux ARM
 Usage:
     python install.py [--install-base DIR] [--yes]
                       [--editable-geocif PATH] [--editable-geoprepare PATH]
-                      [--editable-octvi PATH] [--octvi-git URL]
+                      [--editable-octvi PATH] [--octvi-git URL] [--hf-cache DIR]
                       [--platform {auto,windows,umd_hpc,linux,macos}]
 
 Stdlib-only; needs Python 3.8+ to bootstrap (pixi manages the target Python).
@@ -372,8 +372,20 @@ def render_pixi_toml(
     editable_geoprepare: str | None,
     editable_octvi: str | None,
     octvi_git: str,
+    hf_cache: pathlib.Path | None = None,
 ) -> str:
     geoprepare = _pkg_line("geoprepare", editable_geoprepare, f'">={GEOPREPARE_MIN}"')
+    activation = ""
+    if hf_cache:
+        # HF_HUB_CACHE, not HF_HOME: HF_HOME also holds the Hugging Face login
+        # token, and moving it would hide an existing login from the gated
+        # TabPFN downloads. as_posix() keeps Windows backslashes out of TOML.
+        activation = (
+            "\n# Set by pixi on every `pixi run` / `pixi shell`: model weights\n"
+            "# (TabPFN, Kumo-Tabular, ...) download here, not into ~/.cache.\n"
+            "[activation.env]\n"
+            f'HF_HUB_CACHE = "{hf_cache.as_posix()}"\n'
+        )
     geocif = _pkg_line("geocif", editable_geocif, f'">={GEOCIF_MIN}"')
     if editable_octvi:
         p = pathlib.Path(editable_octvi).expanduser().resolve().as_posix()
@@ -398,7 +410,29 @@ def render_pixi_toml(
         + f'tabpfn-gsa = {{ git = "{TABPFN_GSA_GIT}" }}\n'
         + f'structured-data-models = {{ git = "{SDM_GIT}", tag = "{SDM_TAG}" }}\n'
         + _PYPI_ONLY
+        + activation
     )
+
+
+def resolve_hf_cache(requested: pathlib.Path | None,
+                     install_base: pathlib.Path) -> pathlib.Path | None:
+    """Where Hugging Face model weights should go, or None to leave it alone.
+
+    --hf-cache wins. Otherwise default to <install-base>/hf_cache, unless the
+    user already points HF_HOME or HF_HUB_CACHE somewhere else (an existing
+    cache, or a token stored under HF_HOME), in which case that setting stays
+    in charge. A value equal to the default means this installer set it on an
+    earlier run (e.g. re-running from inside `pixi shell`), so keep writing it.
+    """
+    if requested:
+        return requested.expanduser().resolve()
+    default = install_base / "hf_cache"
+    for var in ("HF_HUB_CACHE", "HF_HOME"):
+        current = os.environ.get(var)
+        if current and pathlib.Path(current).expanduser().resolve() != default:
+            info(f"{var} is already set ({current}); leaving the Hugging Face cache alone.")
+            return None
+    return default
 
 
 # -------- Activation helpers --------
@@ -504,6 +538,10 @@ def parse_args() -> argparse.Namespace:
                    help="Install octvi editable from this local clone.")
     p.add_argument("--octvi-git", type=str, default=DEFAULT_OCTVI_GIT,
                    help=f"octvi git URL when not editable (default: {DEFAULT_OCTVI_GIT}).")
+    p.add_argument("--hf-cache", type=pathlib.Path, default=None,
+                   help="Hugging Face model cache, set as HF_HUB_CACHE in the env "
+                        "(default: <install-base>/hf_cache unless HF_HOME or "
+                        "HF_HUB_CACHE is already set).")
     p.add_argument("--platform", choices=["auto", "windows", "umd_hpc", "linux", "macos"],
                    default="auto", help="Override platform detection.")
     p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation.")
@@ -519,6 +557,7 @@ def main() -> None:
     platform = args.platform if args.platform != "auto" else detect_platform()
     install_base = (args.install_base or default_install_base(platform)).expanduser().resolve()
     install_dir = install_base / "geo-stack"
+    hf_cache = resolve_hf_cache(args.hf_cache, install_base)
 
     print("=" * 60)
     print(f"Platform:       {platform}  (conda subdir: {pixi_platform()})")
@@ -526,6 +565,7 @@ def main() -> None:
     print(f"geocif:         {args.editable_geocif or f'(PyPI >={GEOCIF_MIN})'}")
     print(f"geoprepare:     {args.editable_geoprepare or f'(PyPI >={GEOPREPARE_MIN})'}")
     print(f"octvi:          {args.editable_octvi or args.octvi_git}")
+    print(f"HF model cache: {hf_cache or '(your existing HF_HOME / HF_HUB_CACHE)'}")
     print("=" * 60)
     if not args.yes:
         if input("Continue? [y/N] ").strip().lower() not in ("y", "yes"):
@@ -558,6 +598,7 @@ def main() -> None:
         editable_geoprepare=args.editable_geoprepare,
         editable_octvi=args.editable_octvi,
         octvi_git=args.octvi_git,
+        hf_cache=hf_cache,
     )
     (install_dir / "pixi.toml").write_text(toml, encoding="utf-8")
     ok(f"Wrote {install_dir / 'pixi.toml'}")

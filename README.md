@@ -120,10 +120,24 @@ What ends up on disk:
 │   ├── pixi.lock              <- resolved versions
 │   ├── activate.sh            <- Linux/HPC (activate.ps1 + activate.bat on Windows)
 │   └── .pixi/envs/default/    <- the actual environment: python, gdal, geocif, ...
+├── hf_cache/                  <- Hugging Face model weights (TabPFN, Kumo, ...), see below
 ├── .pixi-cache/               <- HPC only: pixi package cache, kept off the quota'd /home
 ├── .pixi-home/                <- HPC only: the pixi binary itself
 └── .tmp/                      <- only created if pixi had to be installed here
 ```
+
+**Model weights.** geocif's foundation models (TabPFN, Kumo-Tabular, ...)
+download their weights from Hugging Face on first use, often a GB or more. The
+installer sets `HF_HUB_CACHE=<install-base>/hf_cache` in the environment (in
+`pixi.toml`'s `[activation.env]`, so every `pixi run`, `pixi shell` and
+`activate` script gets it), which keeps them off a small or quota'd home. Pass
+`--hf-cache DIR` to put them elsewhere. If `HF_HOME` or `HF_HUB_CACHE` is
+already set when you run the installer, it leaves that alone. pixi applies the
+value even over an `HF_HUB_CACHE` exported later in your shell, so to move the
+cache, re-run the installer with `--hf-cache`. It sets
+`HF_HUB_CACHE` rather than `HF_HOME` because `HF_HOME` also holds your Hugging
+Face login token, and moving it would hide an existing login from gated
+downloads.
 
 Apart from that tree, the only things touched outside `<install-base>` come from
 pixi's own bootstrap the first time it runs: the pixi binary (`~/.pixi/bin`, or
@@ -306,6 +320,9 @@ Edits in those repos are live immediately (no reinstall). Anything not passed
 --editable-octvi PATH      Install octvi editable from a local clone.
 --octvi-git URL            octvi git URL when not editable
                              (default: https://github.com/ritviksahajpal/octvi.git).
+--hf-cache DIR             Hugging Face model cache, set as HF_HUB_CACHE in the env
+                             (default: <install-base>/hf_cache, unless HF_HOME or
+                             HF_HUB_CACHE is already set).
 --platform NAME            Override detection: windows|umd_hpc|linux|macos|auto.
 --yes / -y                 Skip the confirmation prompt (required for batch jobs).
 ```
@@ -349,7 +366,7 @@ The generated `pixi.toml` pins the whole stack, validated to resolve across
   `sdm`, pinned to tag `v0.2.0rc2`; runs the
   [Kumo-Tabular](https://huggingface.co/nvidia/Kumo-Tabular) model behind
   geocif's `model="kumo"`). Kumo's weights download from Hugging Face on first
-  use; on the HPC set `HF_HOME` to a `/gpfs` path so they stay off `/home`.
+  use, into the [model-weights cache](#where-it-installs).
 
 > **octvi note:** the default `--octvi-git` is `ritviksahajpal/octvi`. Make sure
 > that fork has the GCVI Int32 fix; upstream `nasaharvest/octvi` does not, and an
